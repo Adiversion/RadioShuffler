@@ -9,7 +9,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -114,7 +113,13 @@ interface RadioGardenService {
 sealed class RadioUiState {
     object Idle : RadioUiState()
     object Loading : RadioUiState()
-    data class Playing(val title: String, val city: String, val country: String, val isPlaying: Boolean) : RadioUiState()
+    data class Playing(
+        val title: String,
+        val city: String,
+        val country: String,
+        val currentTrack: String?,
+        val isPlaying: Boolean
+    ) : RadioUiState()
     data class Error(val message: String) : RadioUiState()
 }
 
@@ -136,6 +141,33 @@ class RadioViewModel : ViewModel() {
                 }
             }
 
+            // Capture ICY metadata (Live song / artist) emitted by the stream
+            override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                val current = _uiState.value
+                val streamTitle = mediaMetadata.title?.toString()
+                if (current is RadioUiState.Playing && !streamTitle.isNullOrBlank() && streamTitle != current.title) {
+                    _uiState.value = current.copy(currentTrack = streamTitle)
+                }
+            }
+
+            // Sync UI if track changes via Bluetooth buttons
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                mediaItem?.mediaMetadata?.let { meta ->
+                    val stationTitle = meta.title?.toString() ?: "Radio Station"
+                    val locationParts = (meta.artist?.toString() ?: "").split(", ")
+                    val city = locationParts.getOrNull(0) ?: ""
+                    val country = locationParts.getOrNull(1) ?: ""
+
+                    _uiState.value = RadioUiState.Playing(
+                        title = stationTitle,
+                        city = city,
+                        country = country,
+                        currentTrack = null,
+                        isPlaying = true
+                    )
+                }
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 _uiState.value = RadioUiState.Error("Stream unreachable. Tap Shuffle again!")
             }
@@ -146,6 +178,10 @@ class RadioViewModel : ViewModel() {
         controller?.let {
             if (it.isPlaying) it.pause() else it.play()
         }
+    }
+
+    fun nextStation() {
+        controller?.seekToNext()
     }
 
     fun shuffle() {
@@ -227,6 +263,7 @@ class RadioViewModel : ViewModel() {
                     title = resolvedTitle ?: "Radio Station",
                     city = resolvedCity ?: "",
                     country = resolvedCountry ?: "",
+                    currentTrack = null,
                     isPlaying = true
                 )
 
@@ -237,7 +274,7 @@ class RadioViewModel : ViewModel() {
     }
 }
 
-// --- Main UI Activity ---
+// --- Activity ---
 class MainActivity : ComponentActivity() {
     private var controllerFuture: ListenableFuture<MediaController>? = null
 
@@ -298,7 +335,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        // App Top Bar
+        // Header
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
@@ -320,11 +357,11 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             )
         }
 
-        // Center Content Card
+        // Center Player Card
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 24.dp),
+                .padding(vertical = 20.dp),
             shape = RoundedCornerShape(32.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222B38))
@@ -332,7 +369,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(32.dp),
+                    .padding(28.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
@@ -340,14 +377,14 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                     is RadioUiState.Idle -> {
                         Box(
                             modifier = Modifier
-                                .size(90.dp)
+                                .size(84.dp)
                                 .clip(CircleShape)
                                 .background(Color(0xFF1B222E)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text("📻", fontSize = 36.sp)
+                            Text("📻", fontSize = 34.sp)
                         }
-                        Spacer(modifier = Modifier.height(24.dp))
+                        Spacer(modifier = Modifier.height(20.dp))
                         Text(
                             text = "Ready to Explore",
                             color = Color.White,
@@ -356,7 +393,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Tap the Shuffle button to tune into a live broadcast from around the world.",
+                            text = "Tap Shuffle or use your Bluetooth headphones' Next button to tune in.",
                             color = Color(0xFF7E8B9B),
                             fontSize = 14.sp,
                             textAlign = TextAlign.Center
@@ -371,7 +408,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                         )
                         Spacer(modifier = Modifier.height(20.dp))
                         Text(
-                            text = "Finding station...",
+                            text = "Tuning global frequencies...",
                             color = Color(0xFF8E9BAE),
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Medium
@@ -379,7 +416,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                     }
 
                     is RadioUiState.Playing -> {
-                        // Live Indicator Badge
+                        // Live indicator badge
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
@@ -402,51 +439,98 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(20.dp))
+                        Spacer(modifier = Modifier.height(18.dp))
 
-                        // Station Title
+                        // Station name
                         Text(
                             text = current.title,
                             color = Color.White,
-                            fontSize = 24.sp,
+                            fontSize = 22.sp,
                             fontWeight = FontWeight.ExtraBold,
                             textAlign = TextAlign.Center,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
 
                         // Location
                         Text(
                             text = "📍 ${current.city}, ${current.country}",
                             color = Color(0xFF00E676),
-                            fontSize = 15.sp,
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Medium,
                             textAlign = TextAlign.Center
                         )
 
-                        Spacer(modifier = Modifier.height(28.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
 
-                        // Play/Pause Control Button
-                        IconButton(
-                            onClick = { viewModel.togglePlayPause() },
-                            modifier = Modifier
-                                .size(68.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.verticalGradient(
-                                        listOf(Color(0xFF222C3A), Color(0xFF18202B))
+                        // Live song / EPG track badge (if emitted by the station's Icecast stream)
+                        if (!current.currentTrack.isNullOrBlank()) {
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF1B2330)),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("🎵", fontSize = 14.sp)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = current.currentTrack,
+                                        color = Color(0xFFE0E6ED),
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
-                                )
-                                .border(1.5.dp, Color(0xFF2F3C4E), CircleShape)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+
+                        // Play / Pause & Skip Controls
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
                         ) {
-                            Text(
-                                text = if (current.isPlaying) "❚❚" else "▶",
-                                color = Color.White,
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            IconButton(
+                                onClick = { viewModel.togglePlayPause() },
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        Brush.verticalGradient(
+                                            listOf(Color(0xFF222C3A), Color(0xFF18202B))
+                                        )
+                                    )
+                                    .border(1.5.dp, Color(0xFF2F3C4E), CircleShape)
+                            ) {
+                                Text(
+                                    text = if (current.isPlaying) "❚❚" else "▶",
+                                    color = Color.White,
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(20.dp))
+
+                            IconButton(
+                                onClick = { viewModel.nextStation() },
+                                modifier = Modifier
+                                    .size(52.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF1A222D))
+                                    .border(1.dp, Color(0xFF2B3645), CircleShape)
+                            ) {
+                                Text(
+                                    text = "⏭",
+                                    color = Color(0xFF00E676),
+                                    fontSize = 18.sp
+                                )
+                            }
                         }
                     }
 
@@ -454,7 +538,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                         Text(
                             text = current.message,
                             color = Color(0xFFFF5252),
-                            fontSize = 15.sp,
+                            fontSize = 14.sp,
                             textAlign = TextAlign.Center
                         )
                     }
@@ -476,10 +560,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "🎲",
-                    fontSize = 20.sp
-                )
+                Text(text = "🎲", fontSize = 20.sp)
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
                     text = "Shuffle Station",
