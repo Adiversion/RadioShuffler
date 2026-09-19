@@ -40,25 +40,60 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Validate signing secrets
+      - name: Prepare release keystore
         env:
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
           KEYSTORE_ENCRYPTION_PASSWORD: ${{ secrets.KEYSTORE_ENCRYPTION_PASSWORD }}
         run: |
-          test -n "$RELEASE_STORE_PASSWORD"
-          test -n "$RELEASE_KEY_PASSWORD"
-          test -n "$KEYSTORE_ENCRYPTION_PASSWORD"
-          test -f keystore/radioshuffler-release.keystore.enc
+          if [ -z "$RELEASE_STORE_PASSWORD" ]; then
+            echo "::error::Secret RELEASE_STORE_PASSWORD is not set in repository secrets."
+            exit 1
+          fi
+          if [ -z "$RELEASE_KEY_PASSWORD" ]; then
+            echo "::error::Secret RELEASE_KEY_PASSWORD is not set in repository secrets."
+            exit 1
+          fi
+          if [ -z "$KEYSTORE_ENCRYPTION_PASSWORD" ]; then
+            echo "::error::Secret KEYSTORE_ENCRYPTION_PASSWORD is not set in repository secrets."
+            exit 1
+          fi
 
-      - name: Decrypt release keystore
-        env:
-          KEYSTORE_ENCRYPTION_PASSWORD: ${{ secrets.KEYSTORE_ENCRYPTION_PASSWORD }}
-        run: |
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
-            -in keystore/radioshuffler-release.keystore.enc \
-            -out "$RUNNER_TEMP/radioshuffler-release.keystore" \
-            -pass env:KEYSTORE_ENCRYPTION_PASSWORD
+          if [ ! -f keystore/radioshuffler-release.keystore.enc ]; then
+            echo "Encrypted release keystore not found in repository. Generating initial release keystore..."
+            mkdir -p keystore
+
+            keytool -genkeypair \
+              -v \
+              -keystore "$RUNNER_TEMP/radioshuffler-release.keystore" \
+              -alias radioshuffler \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass "$RELEASE_STORE_PASSWORD" \
+              -keypass "$RELEASE_KEY_PASSWORD" \
+              -dname "CN=RadioShuffler, OU=Dev, O=RadioShuffler, L=Unknown, S=Unknown, C=US"
+
+            openssl enc -aes-256-cbc -salt -pbkdf2 -iter 100000 \
+              -in "$RUNNER_TEMP/radioshuffler-release.keystore" \
+              -out keystore/radioshuffler-release.keystore.enc \
+              -pass env:KEYSTORE_ENCRYPTION_PASSWORD
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add keystore/radioshuffler-release.keystore.enc
+            git commit -m "Add encrypted release keystore [skip ci]"
+            git push
+            echo "Initial encrypted keystore committed and pushed to repository."
+          else
+            echo "Decrypting existing release keystore..."
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
+              -in keystore/radioshuffler-release.keystore.enc \
+              -out "$RUNNER_TEMP/radioshuffler-release.keystore" \
+              -pass env:KEYSTORE_ENCRYPTION_PASSWORD
+          fi
+
+          test -f "$RUNNER_TEMP/radioshuffler-release.keystore"
 
       - name: Resolve version
         id: version
