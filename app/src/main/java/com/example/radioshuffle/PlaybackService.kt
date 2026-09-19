@@ -17,7 +17,7 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
-        val userAgent = "Mozilla/5.0 (Linux; Android 14) RadioGardenShuffler/1.0"
+        val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
         // Handle cross-protocol 302 redirects (HTTPS -> HTTP stream servers)
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
