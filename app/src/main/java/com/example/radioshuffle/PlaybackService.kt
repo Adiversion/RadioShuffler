@@ -43,14 +43,20 @@ class PlaybackService : MediaSessionService() {
             repository.warmUp()
         }
 
-        val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(userAgent)
             .setAllowCrossProtocolRedirects(true)
-            .setDefaultRequestProperties(mapOf("Icy-MetaData" to "1"))
-            .setConnectTimeoutMs(8_000)
-            .setReadTimeoutMs(10_000)
+            .setDefaultRequestProperties(
+                mapOf(
+                    "Icy-MetaData" to "1",
+                    "Referer" to "https://radio.garden/",
+                    "Origin" to "https://radio.garden"
+                )
+            )
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(25_000)
 
         val dataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
