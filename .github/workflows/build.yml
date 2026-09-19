@@ -187,10 +187,34 @@ jobs:
           name: Radio Shuffler ${{ steps.version.outputs.version_tag }}
           draft: false
           prerelease: false
+          generate_release_notes: true
           body: |
-            versionName=${{ steps.version.outputs.version_name }}
-            versionCode=${{ github.run_number }}
-            This APK is signed for in-app updates. Future releases must use the same signing key.
+            ## 📻 Radio Shuffler ${{ steps.version.outputs.version_tag }}
+
+            ### 📦 Release Metadata
+            - **Version Name:** `${{ steps.version.outputs.version_name }}`
+            - **Build Code:** `${{ github.run_number }}`
+            - **Target OS:** Android 8.0+ (API 26 – API 35)
+            - **License:** GNU General Public License v3.0 (GPL-3.0)
+
+            ---
+
+            ### 🚀 Highlights in this Release
+            - **Modern 3-Tab Bottom Navigation**: Dedicated **Radio Player**, **Search & Discover**, and **Library** tabs.
+            - **Targeted Query Shuffling**: Tap to shuffle random stations within a country, city, or genre (e.g. `🎲 Shuffle “India”`).
+            - **Persistent Mini-Player**: Uninterrupted playback controls while browsing stations or your library.
+            - **Lag-Free 60 FPS Lists**: Virtualized `LazyColumn` rendering replacing unbounded scrolling.
+            - **Live Stream Reconnection**: Stream cycling drops auto-reconnect instead of abruptly skipping stations.
+            - **Synchronized Favorites**: Favorite heart button stays 100% in sync with the active ExoPlayer stream.
+            - **Compact Tuner Card**: Streamlined 200dp height with 44dp enlarged favorite heart button.
+            - **In-App Updater**: Chunked streaming download with live percentage progress bar.
+
+            ---
+
+            ### 📲 Installation & Updates
+            - **Direct Install**: Download `RadioShuffler.apk` below and open it on your Android device.
+            - **Automatic Updates (Obtainium)**: Add `https://github.com/Adiversion/radioshuffler` to [Obtainium](https://github.com/ImranR98/Obtainium).
+            - **In-App Updates**: Open Settings (`☰`) inside the app to check for updates.
           files: release_output/RadioShuffler.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
