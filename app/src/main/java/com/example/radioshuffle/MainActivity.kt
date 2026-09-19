@@ -10,6 +10,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -172,6 +174,10 @@ class RadioViewModel : ViewModel() {
                 isPlaying = mediaController.isPlaying,
                 isBuffering = mediaController.playbackState == Player.STATE_BUFFERING
             )
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.warmUp()
         }
     }
 
@@ -380,11 +386,10 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ModernRadioScreen(viewModel: RadioViewModel) {
     val context = LocalContext.current
-    val state by viewModel.uiState.collectAsState()
-    val sleepTimerMinutes by viewModel.sleepTimerMinutes.collectAsState()
-    val updateState by viewModel.updateState.collectAsState()
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val sleepTimerMinutes by viewModel.sleepTimerMinutes.collectAsStateWithLifecycle()
+    val updateState by viewModel.updateState.collectAsStateWithLifecycle()
     val isLoading = state is RadioUiState.Loading
-    var searchText by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier
@@ -437,6 +442,37 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             }
         }
 
+        SearchSection(
+            isLoading = isLoading,
+            onSearch = { query -> viewModel.shuffle(query) },
+            onShuffle = { viewModel.shuffle() }
+        )
+
+        SleepTimerControls(
+            selectedMinutes = sleepTimerMinutes,
+            onSelect = viewModel::setSleepTimer
+        )
+
+        UpdateControls(
+            updateState = updateState,
+            onUpdate = { viewModel.updateFromGithub(context) }
+        )
+    }
+}
+
+@Composable
+private fun SearchSection(
+    isLoading: Boolean,
+    onSearch: (String) -> Unit,
+    onShuffle: () -> Unit
+) {
+    var searchText by remember { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
         OutlinedTextField(
             value = searchText,
             onValueChange = { searchText = it },
@@ -444,6 +480,27 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             singleLine = true,
             label = { Text("Search station, city, or country") },
             placeholder = { Text("e.g. Tokyo, BBC, jazz, India") },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(
+                onSearch = {
+                    focusManager.clearFocus()
+                    if (searchText.isNotBlank()) {
+                        onSearch(searchText)
+                    }
+                }
+            ),
+            trailingIcon = {
+                if (searchText.isNotEmpty()) {
+                    IconButton(onClick = { searchText = "" }) {
+                        Text(
+                            text = "✕",
+                            color = Color(0xFF8E9BAE),
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            },
             colors = OutlinedTextFieldDefaults.colors(
                 focusedTextColor = Color.White,
                 unfocusedTextColor = Color.White,
@@ -462,7 +519,10 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             OutlinedButton(
-                onClick = { viewModel.shuffle(searchText) },
+                onClick = {
+                    focusManager.clearFocus()
+                    onSearch(searchText)
+                },
                 enabled = !isLoading,
                 modifier = Modifier.weight(1f).height(56.dp),
                 shape = RoundedCornerShape(28.dp)
@@ -471,7 +531,10 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             }
 
             Button(
-                onClick = { viewModel.shuffle() },
+                onClick = {
+                    focusManager.clearFocus()
+                    onShuffle()
+                },
                 enabled = !isLoading,
                 modifier = Modifier.weight(1f).height(56.dp),
                 shape = RoundedCornerShape(28.dp),
@@ -483,16 +546,6 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                 Text("🎲 Shuffle", fontWeight = FontWeight.Bold)
             }
         }
-
-        SleepTimerControls(
-            selectedMinutes = sleepTimerMinutes,
-            onSelect = viewModel::setSleepTimer
-        )
-
-        UpdateControls(
-            updateState = updateState,
-            onUpdate = { viewModel.updateFromGithub(context) }
-        )
     }
 }
 
@@ -501,168 +554,182 @@ private fun RadioStatus(
     state: RadioUiState,
     onTogglePlayPause: () -> Unit
 ) {
-    when (state) {
-        is RadioUiState.Idle -> {
-            Box(
-                modifier = Modifier
-                    .size(84.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF1B222E)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("📻", fontSize = 34.sp)
-            }
-            Spacer(modifier = Modifier.height(20.dp))
-            Text(
-                text = "Ready to Explore",
-                color = Color.White,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Shuffle globally, search by place or station, or use Bluetooth next/previous controls.",
-                color = Color(0xFF7E8B9B),
-                fontSize = 14.sp,
-                textAlign = TextAlign.Center
-            )
-        }
+    val playButtonBrush = remember {
+        Brush.verticalGradient(
+            listOf(Color(0xFF222C3A), Color(0xFF18202B))
+        )
+    }
 
-        is RadioUiState.Loading -> {
-            CircularProgressIndicator(
-                color = Color(0xFF00E676),
-                strokeWidth = 3.dp,
-                modifier = Modifier.size(52.dp)
-            )
-            Spacer(modifier = Modifier.height(20.dp))
-            Text(
-                text = state.message,
-                color = Color(0xFF8E9BAE),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                textAlign = TextAlign.Center
-            )
-        }
-
-        is RadioUiState.Playing -> {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .background(
-                        if (state.isBuffering) Color(0x26FFC107) else Color(0x1A00E676),
-                        RoundedCornerShape(20.dp)
-                    )
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(if (state.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676))
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = when {
-                        state.isBuffering -> "BUFFERING..."
-                        state.isPlaying -> "LIVE STREAM"
-                        else -> "PAUSED"
-                    },
-                    color = if (state.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp
-                )
-            }
-
-            Spacer(modifier = Modifier.height(18.dp))
-
-            Text(
-                text = state.title,
-                color = Color.White,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.ExtraBold,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            Text(
-                text = "📍 ${state.city}, ${state.country}",
-                color = Color(0xFF00E676),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            if (!state.currentTrack.isNullOrBlank()) {
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1B2330)),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+    Crossfade(
+        targetState = state,
+        animationSpec = tween(durationMillis = 200),
+        label = "RadioStatusCrossfade"
+    ) { current ->
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            when (current) {
+                is RadioUiState.Idle -> {
+                    Box(
+                        modifier = Modifier
+                            .size(84.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF1B222E)),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text("🎵", fontSize = 14.sp)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = state.currentTrack,
-                            color = Color(0xFFE0E6ED),
-                            fontSize = 13.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Text("📻", fontSize = 34.sp)
                     }
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Text(
+                        text = "Ready to Explore",
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Shuffle globally, search by place or station, or use Bluetooth next/previous controls.",
+                        color = Color(0xFF7E8B9B),
+                        fontSize = 14.sp,
+                        textAlign = TextAlign.Center
+                    )
                 }
-                Spacer(modifier = Modifier.height(16.dp))
-            }
 
-            Box(
-                modifier = Modifier.size(72.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                if (state.isBuffering) {
+                is RadioUiState.Loading -> {
                     CircularProgressIndicator(
                         color = Color(0xFF00E676),
                         strokeWidth = 3.dp,
-                        modifier = Modifier.size(54.dp)
+                        modifier = Modifier.size(52.dp)
                     )
-                } else {
-                    IconButton(
-                        onClick = onTogglePlayPause,
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Text(
+                        text = current.message,
+                        color = Color(0xFF8E9BAE),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                is RadioUiState.Playing -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
-                            .fillMaxSize()
-                            .clip(CircleShape)
                             .background(
-                                Brush.verticalGradient(
-                                    listOf(Color(0xFF222C3A), Color(0xFF18202B))
-                                )
+                                if (current.isBuffering) Color(0x26FFC107) else Color(0x1A00E676),
+                                RoundedCornerShape(20.dp)
                             )
-                            .border(1.5.dp, Color(0xFF2F3C4E), CircleShape)
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
                     ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(if (current.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676))
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (state.isPlaying) "❚❚" else "▶",
-                            color = Color.White,
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.Bold
+                            text = when {
+                                current.isBuffering -> "BUFFERING..."
+                                current.isPlaying -> "LIVE STREAM"
+                                else -> "PAUSED"
+                            },
+                            color = if (current.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    Text(
+                        text = current.title,
+                        color = Color.White,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "📍 ${current.city}, ${current.country}",
+                        color = Color(0xFF00E676),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    if (!current.currentTrack.isNullOrBlank()) {
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF1B2330)),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("🎵", fontSize = 14.sp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = current.currentTrack,
+                                    color = Color(0xFFE0E6ED),
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
+
+                    Box(
+                        modifier = Modifier.size(72.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (current.isBuffering) {
+                            CircularProgressIndicator(
+                                color = Color(0xFF00E676),
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(54.dp)
+                            )
+                        } else {
+                            IconButton(
+                                onClick = onTogglePlayPause,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(CircleShape)
+                                    .background(playButtonBrush)
+                                    .border(1.5.dp, Color(0xFF2F3C4E), CircleShape)
+                            ) {
+                                Text(
+                                    text = if (current.isPlaying) "❚❚" else "▶",
+                                    color = Color.White,
+                                    fontSize = 22.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                is RadioUiState.Error -> {
+                    Text(
+                        text = current.message,
+                        color = Color(0xFFFF5252),
+                        fontSize = 14.sp,
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
-        }
-
-        is RadioUiState.Error -> {
-            Text(
-                text = state.message,
-                color = Color(0xFFFF5252),
-                fontSize = 14.sp,
-                textAlign = TextAlign.Center
-            )
         }
     }
 }

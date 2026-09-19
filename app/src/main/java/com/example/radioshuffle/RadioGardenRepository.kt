@@ -9,6 +9,8 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 // --- API models ---
 data class PlacesEnvelope(@SerializedName("data") val data: PlacesData?)
@@ -102,8 +104,12 @@ class RadioGardenRepository(
     private val service: RadioGardenService = RadioGardenService.create(),
     private val random: Random = Random.Default
 ) {
-    private var validPlaces: List<PlaceRecord> = emptyList()
-    private val recentlyPlayedIds = ArrayDeque<String>(40)
+    companion object {
+        @Volatile
+        private var sharedPlaces: List<PlaceRecord>? = null
+        private val placesMutex = Mutex()
+        private val sharedRecentlyPlayedIds = ArrayDeque<String>(40)
+    }
 
     suspend fun warmUp() {
         getPlaces()
@@ -222,31 +228,40 @@ class RadioGardenRepository(
     }
 
     private suspend fun getPlaces(): List<PlaceRecord> {
-        if (validPlaces.isNotEmpty()) return validPlaces
+        sharedPlaces?.let { return it }
 
-        validPlaces = runCatching { service.fetchPlaces() }
-            .getOrNull()
-            ?.data
-            ?.list
-            ?.filter { (it.size ?: 0) > 0 && it.id.isNotBlank() }
-            ?.shuffled(random)
-            .orEmpty()
+        return placesMutex.withLock {
+            sharedPlaces?.let { return@withLock it }
+            val fetched = runCatching { service.fetchPlaces() }
+                .getOrNull()
+                ?.data
+                ?.list
+                ?.filter { (it.size ?: 0) > 0 && it.id.isNotBlank() }
+                ?.shuffled(random)
+                .orEmpty()
 
-        return validPlaces
+            if (fetched.isNotEmpty()) {
+                sharedPlaces = fetched
+            }
+            fetched
+        }
     }
 
     private fun remember(channelId: String) {
-        if (recentlyPlayedIds.size >= 40) {
-            recentlyPlayedIds.removeFirst()
+        synchronized(sharedRecentlyPlayedIds) {
+            if (sharedRecentlyPlayedIds.size >= 40) {
+                sharedRecentlyPlayedIds.removeFirst()
+            }
+            sharedRecentlyPlayedIds.addLast(channelId)
         }
-        recentlyPlayedIds.addLast(channelId)
     }
 
     private fun <T> chooseFresh(items: List<T>, idFor: (T) -> String?): T? {
         if (items.isEmpty()) return null
+        val recentSnapshot = synchronized(sharedRecentlyPlayedIds) { sharedRecentlyPlayedIds.toSet() }
         return items.firstOrNull { item ->
             val id = idFor(item)
-            !id.isNullOrBlank() && !recentlyPlayedIds.contains(id)
+            !id.isNullOrBlank() && !recentSnapshot.contains(id)
         } ?: items.firstOrNull()
     }
 
