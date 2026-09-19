@@ -13,14 +13,12 @@ android {
         minSdk = 26
         targetSdk = 35
 
-        // Read dynamic version passed from GitHub Actions, or fallback to defaults
         val appVersionName = project.findProperty("customVersionName") as? String ?: "1.0.0"
         val appVersionCode = (project.findProperty("customVersionCode") as? String)?.toIntOrNull() ?: 1
 
         versionCode = appVersionCode
         versionName = appVersionName
 
-        // Strip non-English localizations to reduce size
         resourceConfigurations += listOf("en")
     }
 
