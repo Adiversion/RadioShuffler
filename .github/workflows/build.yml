@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version_tag:
-        description: 'Version tag (e.g. v1.0.4)'
+        description: 'Version tag (e.g. v1.0.8)'
         required: true
-        default: 'v1.0.4'
+        default: 'v1.0.8'
 
 jobs:
   build:
@@ -29,9 +29,10 @@ jobs:
 
       - name: Build Debug APK with Dynamic Version
         run: |
-          CLEAN_VER="${{ github.event.inputs.version_tag }}"
-          CLEAN_VER="${CLEAN_VER#v}"
-          
+          RAW_VER="${{ github.event.inputs.version_tag }}"
+          CLEAN_VER="${RAW_VER#v}"
+          echo "Building version: $CLEAN_VER"
+
           gradle assembleDebug --no-daemon \
             -PcustomVersionName="$CLEAN_VER" \
             -PcustomVersionCode="${{ github.run_number }}"
