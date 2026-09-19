@@ -221,8 +221,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                         channelId = channelId,
                         title = title,
                         city = city,
-                        country = country,
-                        streamUrl = mediaItem.requestMetadata.mediaUri?.toString() ?: currentStation?.streamUrl ?: ""
+                        country = country
                     )
                     currentStation = activeStation
                     favoritesManager.addRecent(activeStation)
