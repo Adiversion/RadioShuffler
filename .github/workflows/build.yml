@@ -71,7 +71,7 @@ jobs:
               -keysize 2048 \
               -validity 10000 \
               -storepass "$RELEASE_STORE_PASSWORD" \
-              -keypass "$RELEASE_KEY_PASSWORD" \
+              -keypass "$RELEASE_STORE_PASSWORD" \
               -dname "CN=RadioShuffler, OU=Dev, O=RadioShuffler, L=Unknown, S=Unknown, C=US"
 
             openssl enc -aes-256-cbc -salt -pbkdf2 -iter 100000 \
