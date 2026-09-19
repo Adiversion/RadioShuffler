@@ -50,7 +50,7 @@ class PlaybackService : MediaSessionService() {
             .setChannelId(NOTIFICATION_CHANNEL_ID)
             .setNotificationId(NOTIFICATION_ID)
             .build()
-        notificationProvider.setSmallIcon(R.drawable.ic_radio_notification)
+        notificationProvider.setSmallIcon(R.drawable.media3_notification_small_icon)
         setMediaNotificationProvider(notificationProvider)
 
         serviceScope.launch(Dispatchers.IO) {
@@ -102,12 +102,24 @@ class PlaybackService : MediaSessionService() {
                             playShuffleCompleteCue()
                         }
                     }
-                    Player.STATE_ENDED -> shuffleBackground(basePlayer, playCue = false)
+                    Player.STATE_ENDED -> {
+                        // Live radio streams should reconnect rather than discard the user's station
+                        basePlayer.seekToDefaultPosition()
+                        basePlayer.prepare()
+                        basePlayer.play()
+                    }
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                shuffleBackground(basePlayer, playCue = false)
+                if (consecutiveAutoSkips < 1) {
+                    consecutiveAutoSkips += 1
+                    basePlayer.prepare()
+                    basePlayer.play()
+                } else if (consecutiveAutoSkips < MAX_AUTO_SKIPS) {
+                    consecutiveAutoSkips += 1
+                    shuffleBackground(basePlayer, playCue = false)
+                }
             }
         })
 
@@ -234,11 +246,13 @@ class PlaybackService : MediaSessionService() {
 
     private fun ResolvedStation.toMediaItem(): MediaItem {
         return MediaItem.Builder()
+            .setMediaId(channelId)
             .setUri(streamUrl)
             .setMediaMetadata(
                 MediaMetadata.Builder()
                     .setTitle(title)
                     .setArtist(location)
+                    .setDescription(channelId)
                     .build()
             )
             .build()
@@ -263,11 +277,13 @@ class PlaybackService : MediaSessionService() {
             val channel = NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
                 "Radio Stream Playback",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description = "Radio stream playback and lock screen controls"
-                setShowBadge(false)
+                setShowBadge(true)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                setSound(null, null)
+                enableVibration(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
@@ -275,7 +291,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     companion object {
-        const val NOTIFICATION_CHANNEL_ID = "radioshuffler_playback_channel"
+        const val NOTIFICATION_CHANNEL_ID = "radioshuffler_playback_channel_v2"
         const val NOTIFICATION_ID = 1001
         private const val STATION_START_GRACE_MS = 18_000L
         private const val MAX_AUTO_SKIPS = 3

@@ -237,6 +237,22 @@ class RadioGardenRepository(
         }
     }
 
+    suspend fun searchStations(query: String): List<ResolvedStation> {
+        val cleanedQuery = query.trim()
+        if (cleanedQuery.isBlank()) return emptyList()
+
+        val directResults = executeSearch(cleanedQuery)
+        if (directResults.isNotEmpty()) return directResults
+
+        val localPlaces = searchLocalPlaces(cleanedQuery)
+        val gathered = mutableListOf<ResolvedStation>()
+        for (place in localPlaces.take(3)) {
+            gathered.addAll(fetchStationsForPlace(place))
+            if (gathered.size >= 12) break
+        }
+        return gathered.distinctBy { it.channelId }
+    }
+
     private suspend fun nextShuffledStation(): ResolvedStation {
         // 1. Instant pop from prefetch queue
         val candidate = poolMutex.withLock {

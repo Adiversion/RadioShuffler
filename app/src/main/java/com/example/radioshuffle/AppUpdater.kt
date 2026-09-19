@@ -1,10 +1,15 @@
 package com.example.radioshuffle
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -72,7 +77,12 @@ class AppUpdater(
         }
     }
 
-    fun download(updateInfo: AppUpdateInfo): File {
+    fun download(
+        updateInfo: AppUpdateInfo,
+        onProgress: (bytesRead: Long, totalBytes: Long, percent: Int) -> Unit = { _, _, _ -> }
+    ): File {
+        createNotificationChannel()
+
         val request = Request.Builder()
             .url(updateInfo.apkUrl)
             .header("User-Agent", "RadioShuffler/${BuildConfig.VERSION_NAME}")
@@ -80,17 +90,86 @@ class AppUpdater(
 
         val updateDir = File(context.cacheDir, "updates").apply { mkdirs() }
         val apkFile = File(updateDir, "RadioShuffler-${updateInfo.versionName}.apk")
+        val notificationManager = NotificationManagerCompat.from(context)
 
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 throw IllegalStateException("Download failed: HTTP ${response.code}")
             }
 
-            response.body?.byteStream()?.use { input ->
+            val body = response.body ?: throw IllegalStateException("Update download was empty")
+            val totalBytes = body.contentLength()
+            var bytesRead = 0L
+            val buffer = ByteArray(8 * 1024)
+            var lastReportedPercent = -1
+
+            body.byteStream().use { input ->
                 apkFile.outputStream().use { output ->
-                    input.copyTo(output)
+                    var read: Int
+                    while (input.read(buffer).also { read = it } != -1) {
+                        output.write(buffer, 0, read)
+                        bytesRead += read
+
+                        val percent = if (totalBytes > 0) {
+                            ((bytesRead * 100) / totalBytes).toInt().coerceIn(0, 100)
+                        } else {
+                            -1
+                        }
+
+                        if (percent != lastReportedPercent) {
+                            lastReportedPercent = percent
+                            onProgress(bytesRead, totalBytes, percent)
+
+                            if (notificationManager.areNotificationsEnabled()) {
+                                val notifBuilder = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
+                                    .setSmallIcon(R.drawable.media3_notification_small_icon)
+                                    .setContentTitle("Downloading Radio Shuffler")
+                                    .setContentText(
+                                        if (percent >= 0) "Version ${updateInfo.versionName} ($percent%)"
+                                        else "Downloading version ${updateInfo.versionName}..."
+                                    )
+                                    .setProgress(100, percent.coerceAtLeast(0), percent < 0)
+                                    .setOngoing(true)
+                                    .setOnlyAlertOnce(true)
+                                try {
+                                    notificationManager.notify(NOTIFICATION_ID, notifBuilder.build())
+                                } catch (_: SecurityException) { }
+                            }
+                        }
+                    }
                 }
-            } ?: throw IllegalStateException("Update download was empty")
+            }
+        }
+
+        // Post completion notification
+        if (notificationManager.areNotificationsEnabled()) {
+            val apkUri = FileProvider.getUriForFile(
+                context,
+                "${BuildConfig.APPLICATION_ID}.fileprovider",
+                apkFile
+            )
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                101,
+                installIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val completeNotif = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
+                .setSmallIcon(R.drawable.media3_notification_small_icon)
+                .setContentTitle("Radio Shuffler Update Ready")
+                .setContentText("v${updateInfo.versionName} downloaded. Tap to install.")
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setProgress(0, 0, false)
+
+            try {
+                notificationManager.notify(NOTIFICATION_ID, completeNotif.build())
+            } catch (_: SecurityException) { }
         }
 
         return apkFile
@@ -126,6 +205,21 @@ class AppUpdater(
         context.startActivity(intent)
     }
 
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                "App Updates",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Download progress notifications for app updates"
+                setShowBadge(false)
+            }
+            val manager = context.getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(channel)
+        }
+    }
+
     private fun isNewerVersion(remote: String, local: String): Boolean {
         val remoteParts = remote.versionParts()
         val localParts = local.versionParts()
@@ -154,5 +248,7 @@ class AppUpdater(
 
     private companion object {
         const val LATEST_RELEASE_URL = "https://api.github.com/repos/Adiversion/radioshuffler/releases/latest"
+        const val NOTIFICATION_CHANNEL_ID = "radioshuffler_update_channel"
+        const val NOTIFICATION_ID = 2002
     }
 }

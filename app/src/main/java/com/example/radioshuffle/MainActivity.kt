@@ -3,22 +3,29 @@ package com.example.radioshuffle
 import android.Manifest
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.app.Application
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -27,6 +34,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,12 +47,16 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -57,20 +70,15 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
-import android.app.Application
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -99,7 +107,8 @@ sealed class RadioUiState {
         val country: String,
         val currentTrack: String?,
         val isPlaying: Boolean,
-        val isBuffering: Boolean = false
+        val isBuffering: Boolean = false,
+        val channelId: String = ""
     ) : RadioUiState()
     data class Error(val message: String) : RadioUiState()
 }
@@ -107,7 +116,12 @@ sealed class RadioUiState {
 sealed class UpdateUiState {
     object Idle : UpdateUiState()
     object Checking : UpdateUiState()
-    data class Downloading(val versionName: String) : UpdateUiState()
+    data class Downloading(
+        val versionName: String,
+        val percent: Int = 0,
+        val bytesRead: Long = 0L,
+        val totalBytes: Long = 0L
+    ) : UpdateUiState()
     data class OpeningInstaller(val versionName: String) : UpdateUiState()
     object NoUpdate : UpdateUiState()
     object NeedsInstallPermission : UpdateUiState()
@@ -119,6 +133,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
     private val favoritesManager = FavoritesManager(application)
     private var controller: MediaController? = null
     private var shuffleJob: Job? = null
+    private var searchJob: Job? = null
     private var sleepTimerJob: Job? = null
     private var updateJob: Job? = null
     private var lastQuery: String? = null
@@ -126,6 +141,12 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow<RadioUiState>(RadioUiState.Idle)
     val uiState: StateFlow<RadioUiState> = _uiState
+
+    private val _searchResults = MutableStateFlow<List<ResolvedStation>?>(null)
+    val searchResults: StateFlow<List<ResolvedStation>?> = _searchResults
+
+    private val _isSearching = MutableStateFlow(false)
+    val isSearching: StateFlow<Boolean> = _isSearching
 
     private val _favorites = MutableStateFlow<List<ResolvedStation>>(favoritesManager.getFavorites())
     val favorites: StateFlow<List<ResolvedStation>> = _favorites
@@ -168,7 +189,31 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            mediaItem?.mediaMetadata?.let { meta ->
+            val meta = mediaItem?.mediaMetadata
+            val channelId = mediaItem?.mediaId?.takeIf { it.isNotBlank() }
+                ?: meta?.description?.toString()?.takeIf { it.isNotBlank() }
+
+            if (meta != null) {
+                val title = meta.title?.toString() ?: "Radio Station"
+                val location = meta.artist?.toString() ?: ""
+                val locParts = location.split(", ")
+                val city = locParts.getOrNull(0).orEmpty()
+                val country = locParts.getOrNull(1).orEmpty()
+
+                if (!channelId.isNullOrBlank()) {
+                    val activeStation = ResolvedStation(
+                        channelId = channelId,
+                        title = title,
+                        city = city,
+                        country = country,
+                        streamUrl = mediaItem.requestMetadata.mediaUri?.toString() ?: currentStation?.streamUrl ?: ""
+                    )
+                    currentStation = activeStation
+                    favoritesManager.addRecent(activeStation)
+                    _recents.value = favoritesManager.getRecents()
+                    _isCurrentFavorite.value = favoritesManager.isFavorite(channelId)
+                }
+
                 publishPlayingState(meta, isPlaying = true, isBuffering = true)
             }
         }
@@ -244,6 +289,34 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun searchStations(query: String) {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isBlank()) {
+            _searchResults.value = null
+            return
+        }
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            _isSearching.value = true
+            try {
+                val list = withContext(Dispatchers.IO) {
+                    repository.searchStations(cleanQuery)
+                }
+                _searchResults.value = list
+            } catch (_: Exception) {
+                _searchResults.value = emptyList()
+            } finally {
+                _isSearching.value = false
+            }
+        }
+    }
+
+    fun clearSearchResults() {
+        searchJob?.cancel()
+        _searchResults.value = null
+        _isSearching.value = false
+    }
+
     fun setSleepTimer(minutes: Int?) {
         sleepTimerJob?.cancel()
         _sleepTimerMinutes.value = minutes
@@ -285,9 +358,16 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
 
-                _updateState.value = UpdateUiState.Downloading(updateInfo.versionName)
+                _updateState.value = UpdateUiState.Downloading(updateInfo.versionName, 0, 0L, 0L)
                 val apkFile = withContext(Dispatchers.IO) {
-                    updater.download(updateInfo)
+                    updater.download(updateInfo) { bytesRead, totalBytes, percent ->
+                        _updateState.value = UpdateUiState.Downloading(
+                            versionName = updateInfo.versionName,
+                            percent = percent,
+                            bytesRead = bytesRead,
+                            totalBytes = totalBytes
+                        )
+                    }
                 }
 
                 _updateState.value = UpdateUiState.OpeningInstaller(updateInfo.versionName)
@@ -303,6 +383,14 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         val newStatus = favoritesManager.toggleFavorite(station)
         _favorites.value = favoritesManager.getFavorites()
         _isCurrentFavorite.value = newStatus
+    }
+
+    fun toggleFavoriteStation(station: ResolvedStation) {
+        val newStatus = favoritesManager.toggleFavorite(station)
+        _favorites.value = favoritesManager.getFavorites()
+        if (currentStation?.channelId == station.channelId) {
+            _isCurrentFavorite.value = newStatus
+        }
     }
 
     fun removeFavorite(channelId: String) {
@@ -341,9 +429,11 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         val metadata = MediaMetadata.Builder()
             .setTitle(station.title)
             .setArtist(station.location)
+            .setDescription(station.channelId)
             .build()
 
         val mediaItem = MediaItem.Builder()
+            .setMediaId(station.channelId)
             .setUri(station.streamUrl)
             .setMediaMetadata(metadata)
             .build()
@@ -362,7 +452,8 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
             country = station.country,
             currentTrack = null,
             isPlaying = true,
-            isBuffering = true
+            isBuffering = true,
+            channelId = station.channelId
         )
     }
 
@@ -375,9 +466,10 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         val locationParts = (metadata.artist?.toString() ?: "").split(", ")
         val city = locationParts.getOrNull(0).orEmpty()
         val country = locationParts.getOrNull(1).orEmpty()
+        val channelId = currentStation?.channelId.orEmpty()
 
-        currentStation?.let {
-            _isCurrentFavorite.value = favoritesManager.isFavorite(it.channelId)
+        if (channelId.isNotBlank()) {
+            _isCurrentFavorite.value = favoritesManager.isFavorite(channelId)
         }
 
         _uiState.value = RadioUiState.Playing(
@@ -386,7 +478,8 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
             country = country,
             currentTrack = null,
             isPlaying = isPlaying,
-            isBuffering = isBuffering
+            isBuffering = isBuffering,
+            channelId = channelId
         )
     }
 }
@@ -438,10 +531,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModernRadioScreen(viewModel: RadioViewModel) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
+    val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
     val recents by viewModel.recents.collectAsStateWithLifecycle()
     val isFavorite by viewModel.isCurrentFavorite.collectAsStateWithLifecycle()
@@ -449,51 +545,91 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
     val updateState by viewModel.updateState.collectAsStateWithLifecycle()
     val isLoading = state is RadioUiState.Loading
 
+    var showSettingsSheet by remember { mutableStateOf(false) }
+
+    var hasNotificationPermission by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else {
+                NotificationManagerCompat.from(context).areNotificationsEnabled()
+            }
+        )
+    }
+
+    val notificationLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasNotificationPermission = granted
+    }
+
+    val currentChannelId = (state as? RadioUiState.Playing)?.channelId
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .navigationBarsPadding()
             .statusBarsPadding()
-            .padding(horizontal = 24.dp, vertical = 20.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(18.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Top App Bar: Title + Hamburger Settings Button
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp, bottom = 4.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF00E676))
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "RADIO GARDEN SHUFFLER",
-                color = Color(0xFF8E9BAE),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 2.sp
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF00E676))
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "RADIO GARDEN SHUFFLER",
+                    color = Color(0xFF8E9BAE),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 2.sp
+                )
+            }
+
+            IconButton(
+                onClick = { showSettingsSheet = true },
+                modifier = Modifier.size(40.dp)
+            ) {
+                Text(
+                    text = "☰",
+                    color = Color.White,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
 
-        // Center Tuner Card (stable minHeight prevents jumping/resizing on shuffle)
+        // Center Tuner Card: Compact ~200dp, stable height, no blank empty space
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .defaultMinSize(minHeight = 290.dp),
-            shape = RoundedCornerShape(32.dp),
+                .defaultMinSize(minHeight = 200.dp),
+            shape = RoundedCornerShape(24.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222B38))
+            border = BorderStroke(1.dp, Color(0xFF222B38))
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .defaultMinSize(minHeight = 290.dp)
-                    .padding(24.dp),
+                    .defaultMinSize(minHeight = 200.dp)
+                    .padding(18.dp),
                 contentAlignment = Alignment.Center
             ) {
                 RadioStatus(
@@ -505,32 +641,263 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             }
         }
 
+        // Search Section: Interactive station search and global shuffle
         SearchSection(
-            isLoading = isLoading,
-            onSearch = { query -> viewModel.shuffle(query) },
-            onShuffle = { viewModel.shuffle() }
+            isLoading = isLoading || isSearching,
+            onSearch = { query -> viewModel.searchStations(query) },
+            onShuffle = { query ->
+                if (query.isNotBlank()) {
+                    viewModel.shuffle(query)
+                } else {
+                    viewModel.shuffle()
+                }
+            }
         )
 
+        // Search Results List (browse and select station)
+        if (isSearching) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
+                border = BorderStroke(1.dp, Color(0xFF222B38))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = Color(0xFF00E676)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "Searching worldwide stations...",
+                        color = Color(0xFF8E9BAE),
+                        fontSize = 13.sp
+                    )
+                }
+            }
+        } else if (searchResults != null) {
+            SearchResultsSection(
+                results = searchResults!!,
+                currentChannelId = currentChannelId,
+                onPlayStation = { viewModel.playSpecificStation(it) },
+                onClose = { viewModel.clearSearchResults() },
+                onToggleFavorite = { viewModel.toggleFavoriteStation(it) },
+                isFavorite = { channelId -> favorites.any { it.channelId == channelId } }
+            )
+        }
+
+        // Favorites Section
         FavoritesSection(
             favorites = favorites,
             onPlayStation = { viewModel.playSpecificStation(it) },
             onRemoveFavorite = { viewModel.removeFavorite(it.channelId) }
         )
 
+        // Recent Stations Section: Vertical list limited to 20 stations
         RecentStationsSection(
             recents = recents,
-            onPlayStation = { viewModel.playSpecificStation(it) }
+            currentChannelId = currentChannelId,
+            onPlayStation = { viewModel.playSpecificStation(it) },
+            onToggleFavorite = { viewModel.toggleFavoriteStation(it) },
+            isFavorite = { channelId -> favorites.any { it.channelId == channelId } }
         )
+    }
 
-        SleepTimerControls(
-            selectedMinutes = sleepTimerMinutes,
-            onSelect = viewModel::setSleepTimer
-        )
-
-        UpdateControls(
+    // Hamburger Settings Bottom Sheet
+    if (showSettingsSheet) {
+        SettingsBottomSheet(
+            onDismiss = { showSettingsSheet = false },
+            hasNotificationPermission = hasNotificationPermission,
+            onRequestNotificationPermission = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    }
+                    context.startActivity(intent)
+                }
+            },
+            sleepTimerMinutes = sleepTimerMinutes,
+            onSetSleepTimer = viewModel::setSleepTimer,
             updateState = updateState,
-            onUpdate = { viewModel.updateFromGithub(context) }
+            onCheckUpdate = { viewModel.updateFromGithub(context) }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsBottomSheet(
+    onDismiss: () -> Unit,
+    hasNotificationPermission: Boolean,
+    onRequestNotificationPermission: () -> Unit,
+    sleepTimerMinutes: Int?,
+    onSetSleepTimer: (Int?) -> Unit,
+    updateState: UpdateUiState,
+    onCheckUpdate: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = Color(0xFF141922),
+        contentColor = Color.White,
+        dragHandle = null,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 22.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("⚙", fontSize = 18.sp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Settings & Controls",
+                        color = Color.White,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Text("✕", color = Color(0xFF8E9BAE), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            // Divider
+            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF222B38)))
+
+            // 1. Sleep Timer
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "⏱ Sleep Timer",
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = if (sleepTimerMinutes == null) "Off" else "$sleepTimerMinutes min",
+                        color = if (sleepTimerMinutes == null) Color(0xFF8E9BAE) else Color(0xFF00E676),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    TimerButton("Off", sleepTimerMinutes == null, Modifier.weight(1f)) { onSetSleepTimer(null) }
+                    TimerButton("15m", sleepTimerMinutes == 15, Modifier.weight(1f)) { onSetSleepTimer(15) }
+                    TimerButton("30m", sleepTimerMinutes == 30, Modifier.weight(1f)) { onSetSleepTimer(30) }
+                    TimerButton("60m", sleepTimerMinutes == 60, Modifier.weight(1f)) { onSetSleepTimer(60) }
+                }
+            }
+
+            // Divider
+            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF222B38)))
+
+            // 2. Lock Screen & Notification Controls
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "🔔 Lock Screen Player",
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1B2330)),
+                    border = BorderStroke(1.dp, Color(0xFF2C394B))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (hasNotificationPermission) "Controls enabled" else "Permission required",
+                                color = if (hasNotificationPermission) Color(0xFF00E676) else Color(0xFFFFB300),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = if (hasNotificationPermission)
+                                    "MIUI/HyperOS tip: Ensure notification visibility on lock screen is set to 'Show all notifications'."
+                                else
+                                    "Allows media controls on lock screen and notification drawer.",
+                                color = Color(0xFF8E9BAE),
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        if (!hasNotificationPermission) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = onRequestNotificationPermission,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text("Enable", color = Color(0xFF0A1017), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Divider
+            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF222B38)))
+
+            // 3. GitHub App Updates
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "🔄 App Updates",
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                UpdateControls(
+                    updateState = updateState,
+                    onUpdate = onCheckUpdate
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+        }
     }
 }
 
@@ -538,7 +905,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
 private fun SearchSection(
     isLoading: Boolean,
     onSearch: (String) -> Unit,
-    onShuffle: () -> Unit
+    onShuffle: (String) -> Unit
 ) {
     var searchText by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
@@ -553,7 +920,7 @@ private fun SearchSection(
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             label = { Text("Search station, city, or country") },
-            placeholder = { Text("e.g. Tokyo, BBC, jazz, India") },
+            placeholder = { Text("e.g. KIIS FM, Tokyo, jazz, BBC") },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(
                 onSearch = {
@@ -598,26 +965,174 @@ private fun SearchSection(
                     onSearch(searchText)
                 },
                 enabled = !isLoading,
-                modifier = Modifier.weight(1f).height(56.dp),
-                shape = RoundedCornerShape(28.dp)
+                modifier = Modifier
+                    .weight(1f)
+                    .height(52.dp),
+                shape = RoundedCornerShape(26.dp),
+                border = BorderStroke(1.dp, Color(0xFF2F3C4E))
             ) {
-                Text("Search")
+                Text(text = "Search", color = Color.White, fontWeight = FontWeight.SemiBold)
             }
 
             Button(
                 onClick = {
                     focusManager.clearFocus()
-                    onShuffle()
+                    onShuffle(searchText)
                 },
                 enabled = !isLoading,
-                modifier = Modifier.weight(1f).height(56.dp),
-                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(52.dp),
+                shape = RoundedCornerShape(26.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF00E676),
                     contentColor = Color(0xFF0A120D)
                 )
             ) {
-                Text("🎲 Shuffle", fontWeight = FontWeight.Bold)
+                Text(text = "🎲 Shuffle", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchResultsSection(
+    results: List<ResolvedStation>,
+    currentChannelId: String?,
+    onPlayStation: (ResolvedStation) -> Unit,
+    onClose: () -> Unit,
+    onToggleFavorite: (ResolvedStation) -> Unit,
+    isFavorite: (String) -> Boolean
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "🔍 SEARCH RESULTS",
+                    color = Color(0xFF00E676),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .background(Color(0xFF1E2632), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "${results.size}",
+                        color = Color(0xFF00E676),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier.size(28.dp)
+            ) {
+                Text("✕", color = Color(0xFF8E9BAE), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        if (results.isEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
+                border = BorderStroke(1.dp, Color(0xFF222B38))
+            ) {
+                Text(
+                    text = "No stations found. Try searching for a country, city, or station name.",
+                    color = Color(0xFF6E7D91),
+                    fontSize = 13.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                results.take(15).forEach { station ->
+                    val isCurrent = station.channelId == currentChannelId
+                    val isFav = isFavorite(station.channelId)
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { onPlayStation(station) },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isCurrent) Color(0xFF15261D) else Color(0xFF141922)
+                        ),
+                        border = BorderStroke(
+                            1.dp,
+                            if (isCurrent) Color(0xFF00E676) else Color(0xFF222B38)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = if (isCurrent) "▶" else "📻",
+                                    fontSize = 14.sp,
+                                    color = if (isCurrent) Color(0xFF00E676) else Color.White
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = station.title,
+                                        color = if (isCurrent) Color(0xFF00E676) else Color.White,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = station.location,
+                                        color = Color(0xFF8E9BAE),
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            IconButton(
+                                onClick = { onToggleFavorite(station) },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Text(
+                                    text = if (isFav) "♥" else "♡",
+                                    color = if (isFav) Color(0xFFFF2D55) else Color(0xFF6E7D91),
+                                    fontSize = 18.sp
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -644,7 +1159,7 @@ private fun RadioStatus(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .defaultMinSize(minHeight = 240.dp),
+                .defaultMinSize(minHeight = 165.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
@@ -652,25 +1167,25 @@ private fun RadioStatus(
                 is RadioUiState.Idle -> {
                     Box(
                         modifier = Modifier
-                            .size(84.dp)
+                            .size(52.dp)
                             .clip(CircleShape)
                             .background(Color(0xFF1B222E)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("📻", fontSize = 34.sp)
+                        Text("📻", fontSize = 26.sp)
                     }
-                    Spacer(modifier = Modifier.height(20.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
                     Text(
                         text = "Ready to Explore",
                         color = Color.White,
-                        fontSize = 20.sp,
+                        fontSize = 18.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Shuffle globally, search by place or station, or use Bluetooth next/previous controls.",
+                        text = "Tap 🎲 Shuffle or search any place or station to start listening.",
                         color = Color(0xFF7E8B9B),
-                        fontSize = 14.sp,
+                        fontSize = 12.sp,
                         textAlign = TextAlign.Center
                     )
                 }
@@ -679,13 +1194,13 @@ private fun RadioStatus(
                     CircularProgressIndicator(
                         color = Color(0xFF00E676),
                         strokeWidth = 3.dp,
-                        modifier = Modifier.size(52.dp)
+                        modifier = Modifier.size(40.dp)
                     )
-                    Spacer(modifier = Modifier.height(20.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
                     Text(
                         text = current.message,
                         color = Color(0xFF8E9BAE),
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
                         textAlign = TextAlign.Center
                     )
@@ -704,7 +1219,7 @@ private fun RadioStatus(
                                     if (current.isBuffering) Color(0x26FFC107) else Color(0x1A00E676),
                                     RoundedCornerShape(20.dp)
                                 )
-                                .padding(horizontal = 12.dp, vertical = 4.dp)
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
                         ) {
                             Box(
                                 modifier = Modifier
@@ -715,87 +1230,92 @@ private fun RadioStatus(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = when {
-                                    current.isBuffering -> "BUFFERING..."
+                                    current.isBuffering -> "BUFFERING"
                                     current.isPlaying -> "LIVE STREAM"
                                     else -> "PAUSED"
                                 },
                                 color = if (current.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676),
-                                fontSize = 11.sp,
+                                fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 1.sp
                             )
                         }
 
+                        // Large, easily tappable favorite heart button (44dp target, 26sp, #FF2D55 active)
                         IconButton(
                             onClick = onToggleFavorite,
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(44.dp)
                         ) {
                             Text(
                                 text = if (isFavorite) "♥" else "♡",
-                                color = if (isFavorite) Color(0xFFFF5252) else Color(0xFF8E9BAE),
-                                fontSize = 22.sp,
+                                color = if (isFavorite) Color(0xFFFF2D55) else Color(0xFF8E9BAE),
+                                fontSize = 26.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(18.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
                         text = current.title,
                         color = Color.White,
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(3.dp))
 
                     Text(
                         text = "📍 ${current.city}, ${current.country}",
                         color = Color(0xFF00E676),
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
-                        textAlign = TextAlign.Center
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
 
-                    Spacer(modifier = Modifier.height(16.dp))
-
                     if (!current.currentTrack.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(8.dp))
                         Card(
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(10.dp),
                             colors = CardDefaults.cardColors(containerColor = Color(0xFF1B2330)),
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp)
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("🎵", fontSize = 14.sp)
-                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("🎵", fontSize = 12.sp)
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = current.currentTrack,
                                     color = Color(0xFFE0E6ED),
-                                    fontSize = 13.sp,
+                                    fontSize = 12.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.height(16.dp))
                     }
 
+                    Spacer(modifier = Modifier.height(12.dp))
+
                     Box(
-                        modifier = Modifier.size(72.dp),
+                        modifier = Modifier.size(56.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         if (current.isBuffering) {
                             CircularProgressIndicator(
                                 color = Color(0xFF00E676),
                                 strokeWidth = 3.dp,
-                                modifier = Modifier.size(54.dp)
+                                modifier = Modifier.size(44.dp)
                             )
                         } else {
                             IconButton(
@@ -809,7 +1329,7 @@ private fun RadioStatus(
                                 Text(
                                     text = if (current.isPlaying) "❚❚" else "▶",
                                     color = Color.White,
-                                    fontSize = 22.sp,
+                                    fontSize = 18.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -820,18 +1340,18 @@ private fun RadioStatus(
                 is RadioUiState.Error -> {
                     Box(
                         modifier = Modifier
-                            .size(64.dp)
+                            .size(48.dp)
                             .clip(CircleShape)
                             .background(Color(0x26FF5252)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("⚠", fontSize = 28.sp)
+                        Text("⚠", fontSize = 22.sp)
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
                     Text(
                         text = current.message,
                         color = Color(0xFFFF5252),
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
                         textAlign = TextAlign.Center
                     )
@@ -884,14 +1404,16 @@ private fun FavoritesSection(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222B38))
+                border = BorderStroke(1.dp, Color(0xFF222B38))
             ) {
                 Text(
                     text = "No favorites yet. Tap the ♡ heart icon while listening to save stations here!",
                     color = Color(0xFF6E7D91),
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(16.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
                 )
             }
         } else {
@@ -915,9 +1437,14 @@ private fun FavoritesSection(
 @Composable
 private fun RecentStationsSection(
     recents: List<ResolvedStation>,
-    onPlayStation: (ResolvedStation) -> Unit
+    currentChannelId: String?,
+    onPlayStation: (ResolvedStation) -> Unit,
+    onToggleFavorite: (ResolvedStation) -> Unit,
+    isFavorite: (String) -> Boolean
 ) {
     if (recents.isEmpty()) return
+
+    val displayList = recents.take(20)
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -925,41 +1452,103 @@ private fun RecentStationsSection(
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = "🕒 RECENT STATIONS",
-                color = Color(0xFF8E9BAE),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Box(
-                modifier = Modifier
-                    .background(Color(0xFF1E2632), RoundedCornerShape(10.dp))
-                    .padding(horizontal = 8.dp, vertical = 2.dp)
-            ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "${recents.size}",
+                    text = "🕒 RECENT STATIONS",
                     color = Color(0xFF8E9BAE),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
                 )
+                Spacer(modifier = Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .background(Color(0xFF1E2632), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "${displayList.size} / 20",
+                        color = Color(0xFF8E9BAE),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
 
-        LazyRow(
+        Column(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(recents, key = { it.channelId }) { station ->
-                StationCard(
-                    station = station,
-                    badgeIcon = "📻",
-                    onPlay = { onPlayStation(station) },
-                    onRemove = null
-                )
+            displayList.forEach { station ->
+                val isCurrent = station.channelId == currentChannelId
+                val isFav = isFavorite(station.channelId)
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable { onPlayStation(station) },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isCurrent) Color(0xFF15261D) else Color(0xFF141922)
+                    ),
+                    border = BorderStroke(
+                        1.dp,
+                        if (isCurrent) Color(0xFF00E676) else Color(0xFF222B38)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = if (isCurrent) "▶" else "📻",
+                                fontSize = 14.sp,
+                                color = if (isCurrent) Color(0xFF00E676) else Color.White
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = station.title,
+                                    color = if (isCurrent) Color(0xFF00E676) else Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = station.location,
+                                    color = Color(0xFF8E9BAE),
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        IconButton(
+                            onClick = { onToggleFavorite(station) },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Text(
+                                text = if (isFav) "♥" else "♡",
+                                color = if (isFav) Color(0xFFFF2D55) else Color(0xFF6E7D91),
+                                fontSize = 18.sp
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -979,7 +1568,7 @@ private fun StationCard(
             .clickable(onClick = onPlay),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222B38))
+        border = BorderStroke(1.dp, Color(0xFF222B38))
     ) {
         Column(
             modifier = Modifier.padding(12.dp)
@@ -1021,34 +1610,6 @@ private fun StationCard(
 }
 
 @Composable
-private fun SleepTimerControls(
-    selectedMinutes: Int?,
-    onSelect: (Int?) -> Unit
-) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Text(
-            text = if (selectedMinutes == null) "Sleep timer: Off" else "Sleep timer: $selectedMinutes min",
-            color = Color(0xFF8E9BAE),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            TimerButton("Off", selectedMinutes == null, Modifier.weight(1f)) { onSelect(null) }
-            TimerButton("15", selectedMinutes == 15, Modifier.weight(1f)) { onSelect(15) }
-            TimerButton("30", selectedMinutes == 30, Modifier.weight(1f)) { onSelect(30) }
-            TimerButton("60", selectedMinutes == 60, Modifier.weight(1f)) { onSelect(60) }
-        }
-    }
-}
-
-@Composable
 private fun TimerButton(
     label: String,
     selected: Boolean,
@@ -1064,7 +1625,7 @@ private fun TimerButton(
             contentColor = if (selected) Color(0xFF00E676) else Color(0xFF8E9BAE)
         )
     ) {
-        Text(label)
+        Text(label, fontSize = 12.sp)
     }
 }
 
@@ -1080,30 +1641,129 @@ private fun UpdateControls(
         OutlinedButton(
             onClick = onUpdate,
             enabled = updateState !is UpdateUiState.Checking && updateState !is UpdateUiState.Downloading,
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = RoundedCornerShape(26.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            shape = RoundedCornerShape(24.dp)
         ) {
-            Text("Check for app update")
+            Text("Check for app update", fontSize = 13.sp)
         }
 
-        val message = when (updateState) {
-            UpdateUiState.Idle -> null
-            UpdateUiState.Checking -> "Checking GitHub releases..."
-            is UpdateUiState.Downloading -> "Downloading ${updateState.versionName}..."
-            is UpdateUiState.OpeningInstaller -> "Opening installer for ${updateState.versionName}..."
-            UpdateUiState.NoUpdate -> "You are already on the latest release."
-            UpdateUiState.NeedsInstallPermission -> "Allow “Install unknown apps” for Radio Shuffler, then tap update again."
-            is UpdateUiState.Error -> updateState.message
-        }
-
-        if (message != null) {
-            Text(
-                text = message,
-                color = if (updateState is UpdateUiState.Error) Color(0xFFFF5252) else Color(0xFF8E9BAE),
-                fontSize = 12.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
-            )
+        when (updateState) {
+            UpdateUiState.Idle -> Unit
+            UpdateUiState.Checking -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = Color(0xFF00E676)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Checking GitHub releases...",
+                        color = Color(0xFF8E9BAE),
+                        fontSize = 12.sp
+                    )
+                }
+            }
+            is UpdateUiState.Downloading -> {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Downloading v${updateState.versionName}",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = if (updateState.percent >= 0) "${updateState.percent}%" else "Downloading...",
+                            color = Color(0xFF00E676),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    if (updateState.percent >= 0) {
+                        LinearProgressIndicator(
+                            progress = { (updateState.percent / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = Color(0xFF00E676),
+                            trackColor = Color(0xFF222B38)
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = Color(0xFF00E676),
+                            trackColor = Color(0xFF222B38)
+                        )
+                    }
+                    if (updateState.totalBytes > 0) {
+                        val currentMb = String.format(java.util.Locale.US, "%.1f", updateState.bytesRead / (1024.0 * 1024.0))
+                        val totalMb = String.format(java.util.Locale.US, "%.1f", updateState.totalBytes / (1024.0 * 1024.0))
+                        Text(
+                            text = "$currentMb MB / $totalMb MB",
+                            color = Color(0xFF8E9BAE),
+                            fontSize = 11.sp,
+                            textAlign = TextAlign.End,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+            is UpdateUiState.OpeningInstaller -> {
+                Text(
+                    text = "Opening installer for ${updateState.versionName}...",
+                    color = Color(0xFF00E676),
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            UpdateUiState.NoUpdate -> {
+                Text(
+                    text = "You are already on the latest release.",
+                    color = Color(0xFF8E9BAE),
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            UpdateUiState.NeedsInstallPermission -> {
+                Text(
+                    text = "Allow “Install unknown apps” for Radio Shuffler, then tap update again.",
+                    color = Color(0xFFFFB300),
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            is UpdateUiState.Error -> {
+                Text(
+                    text = updateState.message,
+                    color = Color(0xFFFF5252),
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         }
     }
 }
