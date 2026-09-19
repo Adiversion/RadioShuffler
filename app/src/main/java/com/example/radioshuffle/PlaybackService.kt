@@ -19,6 +19,7 @@ class PlaybackService : MediaSessionService() {
 
         val userAgent = "Mozilla/5.0 (Linux; Android 14) RadioGardenShuffler/1.0"
 
+        // Handle cross-protocol 302 redirects (HTTPS -> HTTP stream servers)
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(userAgent)
             .setAllowCrossProtocolRedirects(true)
