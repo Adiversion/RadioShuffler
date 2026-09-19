@@ -62,11 +62,11 @@ jobs:
 
       - name: Resolve version
         id: version
+        shell: python
         env:
           MANUAL_VERSION_TAG: ${{ github.event.inputs.version_tag }}
           VERSION_BUMP: ${{ github.event.inputs.version_bump }}
         run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import os
           import re
           import subprocess
@@ -110,12 +110,17 @@ jobs:
               version_tag = f"v{major}.{minor}.{patch}"
 
           version_name = version_tag[1:] if version_tag.startswith("v") else version_tag
+          output_path = os.environ.get("GITHUB_OUTPUT")
+          if output_path:
+              with open(output_path, "a") as f:
+                  f.write(f"version_tag={version_tag}\n")
+                  f.write(f"version_name={version_name}\n")
           print(f"version_tag={version_tag}")
           print(f"version_name={version_name}")
-          PY
 
       - name: Show resolved version
-        run: echo "Resolved version: ${{ steps.version.outputs.version_tag }}"
+        run: |
+          echo "Resolved version: ${{ steps.version.outputs.version_tag }}"
 
       - name: Build Release APK with Dynamic Version
         env:
