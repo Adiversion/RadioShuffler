@@ -148,7 +148,7 @@ class RadioGardenRepository(
 
         // History tracking to eliminate repetition and country clumping
         private val sharedRecentlyPlayedIds = ArrayDeque<String>(50)
-        private val sharedRecentCountries = ArrayDeque<String>(15)
+        private val sharedRecentCountries = ArrayDeque<String>(35)
 
         // Instant Prefetch Station Pool for zero-latency shuffling
         private val prefetchStationPool = ArrayDeque<ResolvedStation>(20)
@@ -166,7 +166,7 @@ class RadioGardenRepository(
         private const val POOL_TARGET_SIZE = 10
         private const val POOL_MIN_THRESHOLD = 4
         private const val MAX_RECENT_CHANNELS = 50
-        private const val MAX_RECENT_COUNTRIES = 15
+        private const val MAX_RECENT_COUNTRIES = 25
 
         private val fallbackPlaces = listOf(
             PlaceRecord("eR8K4rBb", "Tokyo", "Japan", 20),
@@ -254,14 +254,34 @@ class RadioGardenRepository(
     }
 
     private suspend fun nextShuffledStation(): ResolvedStation {
-        // 1. Instant pop from prefetch queue
+        // 1. Instant pop from prefetch queue, strictly preferring a different country from the last played station
         val candidate = poolMutex.withLock {
             var found: ResolvedStation? = null
-            while (prefetchStationPool.isNotEmpty()) {
-                val popped = prefetchStationPool.removeFirst()
+            val lastCountry = synchronized(sharedRecentCountries) { sharedRecentCountries.lastOrNull() }
+
+            // First pass: find an unplayed candidate from a different country
+            val iterator = prefetchStationPool.iterator()
+            while (iterator.hasNext()) {
+                val popped = iterator.next()
                 if (!isRecentlyPlayed(popped.channelId)) {
-                    found = popped
-                    break
+                    if (lastCountry == null || !popped.country.equals(lastCountry, ignoreCase = true) || prefetchStationPool.size == 1) {
+                        found = popped
+                        iterator.remove()
+                        break
+                    }
+                }
+            }
+
+            // Second pass fallback: any unplayed candidate in pool
+            if (found == null && prefetchStationPool.isNotEmpty()) {
+                val fallbackIter = prefetchStationPool.iterator()
+                while (fallbackIter.hasNext()) {
+                    val popped = fallbackIter.next()
+                    if (!isRecentlyPlayed(popped.channelId)) {
+                        found = popped
+                        fallbackIter.remove()
+                        break
+                    }
                 }
             }
             found
@@ -305,13 +325,18 @@ class RadioGardenRepository(
             if (countries.isEmpty()) return
 
             var attempts = 0
-            while (attempts < 6) {
+            while (attempts < 14) {
                 val currentSize = poolMutex.withLock { prefetchStationPool.size }
                 if (currentSize >= POOL_TARGET_SIZE) break
 
                 attempts++
                 val recentCountriesSnapshot = synchronized(sharedRecentCountries) { sharedRecentCountries.toSet() }
-                val eligibleCountries = countries.filter { it !in recentCountriesSnapshot }.ifEmpty { countries }
+                val poolCountries = poolMutex.withLock { prefetchStationPool.map { it.country }.toSet() }
+
+                // Strict global diversity: prioritize countries that are neither in recent history nor already in the pool
+                val eligibleCountries = countries.filter { it !in recentCountriesSnapshot && it !in poolCountries }
+                    .ifEmpty { countries.filter { it !in poolCountries } }
+                    .ifEmpty { countries }
                 val chosenCountry = eligibleCountries.random(random)
 
                 val countryPlaces = placesByCountry[chosenCountry].orEmpty()
@@ -327,19 +352,18 @@ class RadioGardenRepository(
                 val stations = fetchStationsForPlace(chosenPlace)
                 if (stations.isEmpty()) continue
 
-                val fresh = poolMutex.withLock {
+                // Exactly 1 station per country for pure worldwide diversity
+                val singleStation = poolMutex.withLock {
                     val poolIds = prefetchStationPool.map { it.channelId }.toSet()
                     stations.filter { station ->
                         !isRecentlyPlayed(station.channelId) && station.channelId !in poolIds
-                    }.shuffled(random).take(3)
+                    }.shuffled(random).firstOrNull()
                 }
 
-                if (fresh.isNotEmpty()) {
+                if (singleStation != null) {
                     poolMutex.withLock {
-                        for (s in fresh) {
-                            if (prefetchStationPool.size < POOL_TARGET_SIZE) {
-                                prefetchStationPool.addLast(s)
-                            }
+                        if (prefetchStationPool.size < POOL_TARGET_SIZE) {
+                            prefetchStationPool.addLast(singleStation)
                         }
                     }
                     rememberCountry(chosenCountry)
@@ -360,7 +384,7 @@ class RadioGardenRepository(
         val recentCountriesSnapshot = synchronized(sharedRecentCountries) { sharedRecentCountries.toSet() }
         val eligibleCountries = countries.filter { it !in recentCountriesSnapshot }.ifEmpty { countries }
 
-        repeat(5) {
+        repeat(8) {
             val country = eligibleCountries.random(random)
             val countryPlaces = placesByCountry[country].orEmpty()
             if (countryPlaces.isNotEmpty()) {

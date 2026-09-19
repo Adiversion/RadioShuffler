@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - One-tap "Random Pick" card right inside search results.
 - **Persistent Mini-Player**: Unobtrusive playback bar anchored above the bottom navigation on Search and Library tabs with live status indicator, track title, location, quick play/pause, and favorite heart toggle.
 - **Material 3 Settings Bottom Sheet (`☰`)**: Clean slide-up menu housing the Sleep Timer, Lock Screen media controls guide, and in-app GitHub updater.
+- **Strict Global Diversity**:
+  - Eliminated country clustering in the prefetch queue (`take(1)` per country).
+  - Guaranteed that every single worldwide shuffle tap jumps to a brand new country without repeating the same country consecutively.
+  - Expanded recent country memory window to 25 countries across the globe.
 - **Recent Stations Limit**: Clean vertical history capped at 20 stations with direct play and favorite toggles.
 
 ### 🛠 Fixed
