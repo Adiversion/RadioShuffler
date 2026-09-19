@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -54,6 +55,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -97,6 +99,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+enum class NavTab(val title: String, val icon: String) {
+    RADIO("Radio", "📻"),
+    SEARCH("Search", "🔍"),
+    LIBRARY("Library", "📚")
+}
+
+enum class LibraryTab {
+    FAVORITES,
+    RECENTS
+}
 
 sealed class RadioUiState {
     object Idle : RadioUiState()
@@ -543,8 +556,8 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
     val isFavorite by viewModel.isCurrentFavorite.collectAsStateWithLifecycle()
     val sleepTimerMinutes by viewModel.sleepTimerMinutes.collectAsStateWithLifecycle()
     val updateState by viewModel.updateState.collectAsStateWithLifecycle()
-    val isLoading = state is RadioUiState.Loading
 
+    var currentTab by remember { mutableStateOf(NavTab.RADIO) }
     var showSettingsSheet by remember { mutableStateOf(false) }
 
     var hasNotificationPermission by remember {
@@ -568,17 +581,135 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
 
     val currentChannelId = (state as? RadioUiState.Playing)?.channelId
 
+    Scaffold(
+        bottomBar = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF0C0F14))
+            ) {
+                // Persistent Mini-Player Bar (visible on Search and Library tabs during playback)
+                if (currentTab != NavTab.RADIO && (state is RadioUiState.Playing || state is RadioUiState.Loading)) {
+                    MiniPlayerBar(
+                        state = state,
+                        isFavorite = isFavorite,
+                        onToggleFavorite = viewModel::toggleFavorite,
+                        onTogglePlayPause = viewModel::togglePlayPause,
+                        onOpenPlayer = { currentTab = NavTab.RADIO }
+                    )
+                }
+
+                // Modern Bottom Navigation Bar
+                BottomNavBar(
+                    currentTab = currentTab,
+                    onSelectTab = { currentTab = it }
+                )
+            }
+        },
+        containerColor = Color(0xFF0C0F14)
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            when (currentTab) {
+                NavTab.RADIO -> {
+                    RadioTabContent(
+                        state = state,
+                        isFavorite = isFavorite,
+                        onToggleFavorite = viewModel::toggleFavorite,
+                        onTogglePlayPause = viewModel::togglePlayPause,
+                        onShuffle = { genre -> viewModel.shuffle(genre) },
+                        onOpenSettings = { showSettingsSheet = true }
+                    )
+                }
+                NavTab.SEARCH -> {
+                    SearchTabContent(
+                        isSearching = isSearching,
+                        searchResults = searchResults,
+                        currentChannelId = currentChannelId,
+                        onSearch = { query -> viewModel.searchStations(query) },
+                        onShuffleQuery = { query ->
+                            viewModel.shuffle(query)
+                            currentTab = NavTab.RADIO
+                        },
+                        onPlayStation = { station ->
+                            viewModel.playSpecificStation(station)
+                            currentTab = NavTab.RADIO
+                        },
+                        onClearSearch = { viewModel.clearSearchResults() },
+                        onToggleFavorite = { viewModel.toggleFavoriteStation(it) },
+                        isFavorite = { channelId -> favorites.any { it.channelId == channelId } }
+                    )
+                }
+                NavTab.LIBRARY -> {
+                    LibraryTabContent(
+                        favorites = favorites,
+                        recents = recents,
+                        currentChannelId = currentChannelId,
+                        onPlayStation = { station ->
+                            viewModel.playSpecificStation(station)
+                            currentTab = NavTab.RADIO
+                        },
+                        onRemoveFavorite = { viewModel.removeFavorite(it.channelId) },
+                        onToggleFavorite = { viewModel.toggleFavoriteStation(it) },
+                        isFavorite = { channelId -> favorites.any { it.channelId == channelId } }
+                    )
+                }
+            }
+        }
+    }
+
+    // Hamburger Settings Bottom Sheet
+    if (showSettingsSheet) {
+        SettingsBottomSheet(
+            onDismiss = { showSettingsSheet = false },
+            hasNotificationPermission = hasNotificationPermission,
+            onRequestNotificationPermission = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    }
+                    context.startActivity(intent)
+                }
+            },
+            sleepTimerMinutes = sleepTimerMinutes,
+            onSetSleepTimer = viewModel::setSleepTimer,
+            updateState = updateState,
+            onCheckUpdate = { viewModel.updateFromGithub(context) }
+        )
+    }
+}
+
+// ==========================================
+// 1. Radio Player Tab
+// ==========================================
+@Composable
+private fun RadioTabContent(
+    state: RadioUiState,
+    isFavorite: Boolean,
+    onToggleFavorite: () -> Unit,
+    onTogglePlayPause: () -> Unit,
+    onShuffle: (String?) -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    val quickGenres = remember {
+        listOf("Jazz", "Lo-Fi", "Rock", "Classical", "Electronic", "Ambient", "News")
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .navigationBarsPadding()
             .statusBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 16.dp),
+            .padding(horizontal = 20.dp, vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
-        // Top App Bar: Title + Hamburger Settings Button
+        // Top App Bar
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -604,7 +735,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             }
 
             IconButton(
-                onClick = { showSettingsSheet = true },
+                onClick = onOpenSettings,
                 modifier = Modifier.size(40.dp)
             ) {
                 Text(
@@ -635,104 +766,690 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                 RadioStatus(
                     state = state,
                     isFavorite = isFavorite,
-                    onToggleFavorite = viewModel::toggleFavorite,
-                    onTogglePlayPause = viewModel::togglePlayPause
+                    onToggleFavorite = onToggleFavorite,
+                    onTogglePlayPause = onTogglePlayPause
                 )
             }
         }
 
-        // Search Section: Interactive station search and global shuffle
-        SearchSection(
-            isLoading = isLoading || isSearching,
-            onSearch = { query -> viewModel.searchStations(query) },
-            onShuffle = { query ->
-                if (query.isNotBlank()) {
-                    viewModel.shuffle(query)
-                } else {
-                    viewModel.shuffle()
-                }
-            }
-        )
-
-        // Search Results List (browse and select station)
-        if (isSearching) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-                border = BorderStroke(1.dp, Color(0xFF222B38))
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = Color(0xFF00E676)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "Searching worldwide stations...",
-                        color = Color(0xFF8E9BAE),
-                        fontSize = 13.sp
-                    )
-                }
-            }
-        } else if (searchResults != null) {
-            SearchResultsSection(
-                results = searchResults!!,
-                currentChannelId = currentChannelId,
-                onPlayStation = { viewModel.playSpecificStation(it) },
-                onClose = { viewModel.clearSearchResults() },
-                onToggleFavorite = { viewModel.toggleFavoriteStation(it) },
-                isFavorite = { channelId -> favorites.any { it.channelId == channelId } }
+        // Main Action: Big Shuffle Button
+        Button(
+            onClick = { onShuffle(null) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            shape = RoundedCornerShape(28.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF00E676),
+                contentColor = Color(0xFF0A120D)
+            )
+        ) {
+            Text(
+                text = "🎲 Shuffle Worldwide Radio",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold
             )
         }
 
-        // Favorites Section
-        FavoritesSection(
-            favorites = favorites,
-            onPlayStation = { viewModel.playSpecificStation(it) },
-            onRemoveFavorite = { viewModel.removeFavorite(it.channelId) }
-        )
+        // Quick Shuffle Moods
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "EXPLORE BY GENRE",
+                color = Color(0xFF6E7D91),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp
+            )
 
-        // Recent Stations Section: Vertical list limited to 20 stations
-        RecentStationsSection(
-            recents = recents,
-            currentChannelId = currentChannelId,
-            onPlayStation = { viewModel.playSpecificStation(it) },
-            onToggleFavorite = { viewModel.toggleFavoriteStation(it) },
-            isFavorite = { channelId -> favorites.any { it.channelId == channelId } }
-        )
-    }
-
-    // Hamburger Settings Bottom Sheet
-    if (showSettingsSheet) {
-        SettingsBottomSheet(
-            onDismiss = { showSettingsSheet = false },
-            hasNotificationPermission = hasNotificationPermission,
-            onRequestNotificationPermission = {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                } else {
-                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(quickGenres) { genre ->
+                    OutlinedButton(
+                        onClick = { onShuffle(genre) },
+                        shape = RoundedCornerShape(18.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Color(0xFF141922),
+                            contentColor = Color.White
+                        ),
+                        border = BorderStroke(1.dp, Color(0xFF222B38)),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Text(text = genre, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                     }
-                    context.startActivity(intent)
                 }
-            },
-            sleepTimerMinutes = sleepTimerMinutes,
-            onSetSleepTimer = viewModel::setSleepTimer,
-            updateState = updateState,
-            onCheckUpdate = { viewModel.updateFromGithub(context) }
-        )
+            }
+        }
     }
 }
 
+// ==========================================
+// 2. Search & Discover Tab (Virtualized LazyColumn)
+// ==========================================
+@Composable
+private fun SearchTabContent(
+    isSearching: Boolean,
+    searchResults: List<ResolvedStation>?,
+    currentChannelId: String?,
+    onSearch: (String) -> Unit,
+    onShuffleQuery: (String) -> Unit,
+    onPlayStation: (ResolvedStation) -> Unit,
+    onClearSearch: () -> Unit,
+    onToggleFavorite: (ResolvedStation) -> Unit,
+    isFavorite: (String) -> Boolean
+) {
+    var searchText by remember { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+    val suggestions = remember {
+        listOf("KIIS FM", "BBC", "Tokyo", "Paris", "New York", "Berlin", "Jazz", "Ibiza", "Lo-Fi")
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 14.dp)
+    ) {
+        Text(
+            text = "SEARCH WORLDWIDE",
+            color = Color(0xFF00E676),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 2.sp,
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+
+        // Search Input
+        OutlinedTextField(
+            value = searchText,
+            onValueChange = { searchText = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Station, city, country, or genre") },
+            placeholder = { Text("e.g. KIIS FM, Tokyo, jazz, BBC") },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(
+                onSearch = {
+                    focusManager.clearFocus()
+                    if (searchText.isNotBlank()) onSearch(searchText)
+                }
+            ),
+            trailingIcon = {
+                if (searchText.isNotEmpty()) {
+                    IconButton(onClick = {
+                        searchText = ""
+                        onClearSearch()
+                    }) {
+                        Text("✕", color = Color(0xFF8E9BAE), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White,
+                focusedBorderColor = Color(0xFF00E676),
+                unfocusedBorderColor = Color(0xFF2F3C4E),
+                focusedLabelColor = Color(0xFF00E676),
+                unfocusedLabelColor = Color(0xFF8E9BAE),
+                focusedPlaceholderColor = Color(0xFF586474),
+                unfocusedPlaceholderColor = Color(0xFF586474),
+                cursorColor = Color(0xFF00E676)
+            )
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            OutlinedButton(
+                onClick = {
+                    focusManager.clearFocus()
+                    onSearch(searchText)
+                },
+                enabled = !isSearching,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp),
+                shape = RoundedCornerShape(24.dp),
+                border = BorderStroke(1.dp, Color(0xFF2F3C4E))
+            ) {
+                Text("Search", color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
+
+            Button(
+                onClick = {
+                    focusManager.clearFocus()
+                    onShuffleQuery(searchText)
+                },
+                enabled = !isSearching,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp),
+                shape = RoundedCornerShape(24.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF00E676),
+                    contentColor = Color(0xFF0A120D)
+                )
+            ) {
+                Text("🎲 Shuffle", fontWeight = FontWeight.Bold)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Virtualized Results List (Smooth 60fps, No Lag!)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (isSearching) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
+                        border = BorderStroke(1.dp, Color(0xFF222B38))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = Color(0xFF00E676)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "Searching worldwide stations...",
+                                color = Color(0xFF8E9BAE),
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+            } else if (searchResults != null) {
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "RESULTS (${searchResults.size})",
+                            color = Color(0xFF8E9BAE),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
+                        )
+                        IconButton(
+                            onClick = onClearSearch,
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Text("✕", color = Color(0xFF6E7D91), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                if (searchResults.isEmpty()) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
+                            border = BorderStroke(1.dp, Color(0xFF222B38))
+                        ) {
+                            Text(
+                                text = "No stations found matching this search. Try a country, city, or station name.",
+                                color = Color(0xFF6E7D91),
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp)
+                            )
+                        }
+                    }
+                } else {
+                    items(searchResults, key = { it.channelId }) { station ->
+                        StationItemRow(
+                            station = station,
+                            isCurrent = station.channelId == currentChannelId,
+                            isFav = isFavorite(station.channelId),
+                            onPlay = { onPlayStation(station) },
+                            onToggleFavorite = { onToggleFavorite(station) }
+                        )
+                    }
+                }
+            } else {
+                // Suggestions when search has not run yet
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "POPULAR SEARCHES",
+                            color = Color(0xFF6E7D91),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
+                        )
+
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(suggestions) { tag ->
+                                Card(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .clickable {
+                                            searchText = tag
+                                            onSearch(tag)
+                                        },
+                                    shape = RoundedCornerShape(14.dp),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
+                                    border = BorderStroke(1.dp, Color(0xFF222B38))
+                                ) {
+                                    Text(
+                                        text = tag,
+                                        color = Color.White,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ==========================================
+// 3. Library Tab (Favorites & Recents with LazyColumn)
+// ==========================================
+@Composable
+private fun LibraryTabContent(
+    favorites: List<ResolvedStation>,
+    recents: List<ResolvedStation>,
+    currentChannelId: String?,
+    onPlayStation: (ResolvedStation) -> Unit,
+    onRemoveFavorite: (ResolvedStation) -> Unit,
+    onToggleFavorite: (ResolvedStation) -> Unit,
+    isFavorite: (String) -> Boolean
+) {
+    var selectedTab by remember { mutableStateOf(LibraryTab.FAVORITES) }
+    val displayRecents = remember(recents) { recents.take(20) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 14.dp)
+    ) {
+        Text(
+            text = "YOUR LIBRARY",
+            color = Color(0xFF00E676),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 2.sp,
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+
+        // Sub-filter tabs (Favorites vs Recents)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF141922), RoundedCornerShape(14.dp))
+                .border(BorderStroke(1.dp, Color(0xFF222B38)), RoundedCornerShape(14.dp))
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Button(
+                onClick = { selectedTab = LibraryTab.FAVORITES },
+                modifier = Modifier.weight(1f).height(40.dp),
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (selectedTab == LibraryTab.FAVORITES) Color(0xFF00E676) else Color.Transparent,
+                    contentColor = if (selectedTab == LibraryTab.FAVORITES) Color(0xFF0A120D) else Color(0xFF8E9BAE)
+                )
+            ) {
+                Text(
+                    text = "★ Favorites (${favorites.size})",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Button(
+                onClick = { selectedTab = LibraryTab.RECENTS },
+                modifier = Modifier.weight(1f).height(40.dp),
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (selectedTab == LibraryTab.RECENTS) Color(0xFF00E676) else Color.Transparent,
+                    contentColor = if (selectedTab == LibraryTab.RECENTS) Color(0xFF0A120D) else Color(0xFF8E9BAE)
+                )
+            ) {
+                Text(
+                    text = "🕒 Recents (${displayRecents.size}/20)",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Virtualized LazyColumn for smooth performance
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (selectedTab == LibraryTab.FAVORITES) {
+                if (favorites.isEmpty()) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
+                            border = BorderStroke(1.dp, Color(0xFF222B38))
+                        ) {
+                            Text(
+                                text = "No favorites yet. Tap the ♡ heart icon while listening to save stations here!",
+                                color = Color(0xFF6E7D91),
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(20.dp)
+                            )
+                        }
+                    }
+                } else {
+                    items(favorites, key = { it.channelId }) { station ->
+                        StationItemRow(
+                            station = station,
+                            isCurrent = station.channelId == currentChannelId,
+                            isFav = true,
+                            onPlay = { onPlayStation(station) },
+                            onToggleFavorite = { onRemoveFavorite(station) }
+                        )
+                    }
+                }
+            } else {
+                if (displayRecents.isEmpty()) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
+                            border = BorderStroke(1.dp, Color(0xFF222B38))
+                        ) {
+                            Text(
+                                text = "No recent stations played yet. Start exploring radio to build your history.",
+                                color = Color(0xFF6E7D91),
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(20.dp)
+                            )
+                        }
+                    }
+                } else {
+                    items(displayRecents, key = { it.channelId }) { station ->
+                        StationItemRow(
+                            station = station,
+                            isCurrent = station.channelId == currentChannelId,
+                            isFav = isFavorite(station.channelId),
+                            onPlay = { onPlayStation(station) },
+                            onToggleFavorite = { onToggleFavorite(station) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ==========================================
+// Reusable Station Item Row (Virtualized)
+// ==========================================
+@Composable
+private fun StationItemRow(
+    station: ResolvedStation,
+    isCurrent: Boolean,
+    isFav: Boolean,
+    onPlay: () -> Unit,
+    onToggleFavorite: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onPlay),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isCurrent) Color(0xFF15261D) else Color(0xFF141922)
+        ),
+        border = BorderStroke(
+            1.dp,
+            if (isCurrent) Color(0xFF00E676) else Color(0xFF222B38)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = if (isCurrent) "▶" else "📻",
+                    fontSize = 14.sp,
+                    color = if (isCurrent) Color(0xFF00E676) else Color.White
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = station.title,
+                        color = if (isCurrent) Color(0xFF00E676) else Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = station.location,
+                        color = Color(0xFF8E9BAE),
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            IconButton(
+                onClick = onToggleFavorite,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Text(
+                    text = if (isFav) "♥" else "♡",
+                    color = if (isFav) Color(0xFFFF2D55) else Color(0xFF6E7D91),
+                    fontSize = 18.sp
+                )
+            }
+        }
+    }
+}
+
+// ==========================================
+// Persistent Mini-Player Bar
+// ==========================================
+@Composable
+private fun MiniPlayerBar(
+    state: RadioUiState,
+    isFavorite: Boolean,
+    onToggleFavorite: () -> Unit,
+    onTogglePlayPause: () -> Unit,
+    onOpenPlayer: () -> Unit
+) {
+    val isPlaying = (state as? RadioUiState.Playing)?.isPlaying == true
+    val isBuffering = (state as? RadioUiState.Playing)?.isBuffering == true || state is RadioUiState.Loading
+    val title = when (state) {
+        is RadioUiState.Playing -> state.title
+        is RadioUiState.Loading -> state.message
+        else -> "Radio Shuffler"
+    }
+    val location = (state as? RadioUiState.Playing)?.let { "${it.city}, ${it.country}".trim(',', ' ') } ?: "Live Stream"
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onOpenPlayer),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A222E)),
+        border = BorderStroke(1.dp, Color(0xFF2E3A4D))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(if (isBuffering) Color(0xFFFFC107) else Color(0xFF00E676))
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = title,
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = location,
+                        color = Color(0xFF8E9BAE),
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onToggleFavorite,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Text(
+                        text = if (isFavorite) "♥" else "♡",
+                        color = if (isFavorite) Color(0xFFFF2D55) else Color(0xFF8E9BAE),
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                IconButton(
+                    onClick = onTogglePlayPause,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    if (isBuffering) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = Color(0xFF00E676)
+                        )
+                    } else {
+                        Text(
+                            text = if (isPlaying) "❚❚" else "▶",
+                            color = Color(0xFF00E676),
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ==========================================
+// Modern Bottom Navigation Bar
+// ==========================================
+@Composable
+private fun BottomNavBar(
+    currentTab: NavTab,
+    onSelectTab: (NavTab) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF141922))
+            .border(BorderStroke(1.dp, Color(0xFF222B38)))
+            .navigationBarsPadding()
+            .height(60.dp),
+        horizontalArrangement = Arrangement.SpaceAround,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        NavTab.values().forEach { tab ->
+            val selected = currentTab == tab
+            Column(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onSelectTab(tab) }
+                    .padding(horizontal = 24.dp, vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = tab.icon,
+                    fontSize = 18.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = tab.title,
+                    color = if (selected) Color(0xFF00E676) else Color(0xFF8E9BAE),
+                    fontSize = 11.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                )
+            }
+        }
+    }
+}
+
+// ==========================================
+// Settings Bottom Sheet (Hamburger Menu)
+// ==========================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsBottomSheet(
@@ -901,243 +1618,9 @@ private fun SettingsBottomSheet(
     }
 }
 
-@Composable
-private fun SearchSection(
-    isLoading: Boolean,
-    onSearch: (String) -> Unit,
-    onShuffle: (String) -> Unit
-) {
-    var searchText by remember { mutableStateOf("") }
-    val focusManager = LocalFocusManager.current
-
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        OutlinedTextField(
-            value = searchText,
-            onValueChange = { searchText = it },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("Search station, city, or country") },
-            placeholder = { Text("e.g. KIIS FM, Tokyo, jazz, BBC") },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(
-                onSearch = {
-                    focusManager.clearFocus()
-                    if (searchText.isNotBlank()) {
-                        onSearch(searchText)
-                    }
-                }
-            ),
-            trailingIcon = {
-                if (searchText.isNotEmpty()) {
-                    IconButton(onClick = { searchText = "" }) {
-                        Text(
-                            text = "✕",
-                            color = Color(0xFF8E9BAE),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White,
-                focusedBorderColor = Color(0xFF00E676),
-                unfocusedBorderColor = Color(0xFF2F3C4E),
-                focusedLabelColor = Color(0xFF00E676),
-                unfocusedLabelColor = Color(0xFF8E9BAE),
-                focusedPlaceholderColor = Color(0xFF586474),
-                unfocusedPlaceholderColor = Color(0xFF586474),
-                cursorColor = Color(0xFF00E676)
-            )
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            OutlinedButton(
-                onClick = {
-                    focusManager.clearFocus()
-                    onSearch(searchText)
-                },
-                enabled = !isLoading,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(52.dp),
-                shape = RoundedCornerShape(26.dp),
-                border = BorderStroke(1.dp, Color(0xFF2F3C4E))
-            ) {
-                Text(text = "Search", color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
-
-            Button(
-                onClick = {
-                    focusManager.clearFocus()
-                    onShuffle(searchText)
-                },
-                enabled = !isLoading,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(52.dp),
-                shape = RoundedCornerShape(26.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF00E676),
-                    contentColor = Color(0xFF0A120D)
-                )
-            ) {
-                Text(text = "🎲 Shuffle", fontWeight = FontWeight.Bold)
-            }
-        }
-    }
-}
-
-@Composable
-private fun SearchResultsSection(
-    results: List<ResolvedStation>,
-    currentChannelId: String?,
-    onPlayStation: (ResolvedStation) -> Unit,
-    onClose: () -> Unit,
-    onToggleFavorite: (ResolvedStation) -> Unit,
-    isFavorite: (String) -> Boolean
-) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "🔍 SEARCH RESULTS",
-                    color = Color(0xFF00E676),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Box(
-                    modifier = Modifier
-                        .background(Color(0xFF1E2632), RoundedCornerShape(10.dp))
-                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                ) {
-                    Text(
-                        text = "${results.size}",
-                        color = Color(0xFF00E676),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            IconButton(
-                onClick = onClose,
-                modifier = Modifier.size(28.dp)
-            ) {
-                Text("✕", color = Color(0xFF8E9BAE), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-
-        if (results.isEmpty()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-                border = BorderStroke(1.dp, Color(0xFF222B38))
-            ) {
-                Text(
-                    text = "No stations found. Try searching for a country, city, or station name.",
-                    color = Color(0xFF6E7D91),
-                    fontSize = 13.sp,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp)
-                )
-            }
-        } else {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                results.take(15).forEach { station ->
-                    val isCurrent = station.channelId == currentChannelId
-                    val isFav = isFavorite(station.channelId)
-
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .clickable { onPlayStation(station) },
-                        shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isCurrent) Color(0xFF15261D) else Color(0xFF141922)
-                        ),
-                        border = BorderStroke(
-                            1.dp,
-                            if (isCurrent) Color(0xFF00E676) else Color(0xFF222B38)
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text(
-                                    text = if (isCurrent) "▶" else "📻",
-                                    fontSize = 14.sp,
-                                    color = if (isCurrent) Color(0xFF00E676) else Color.White
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = station.title,
-                                        color = if (isCurrent) Color(0xFF00E676) else Color.White,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = station.location,
-                                        color = Color(0xFF8E9BAE),
-                                        fontSize = 11.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-
-                            IconButton(
-                                onClick = { onToggleFavorite(station) },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Text(
-                                    text = if (isFav) "♥" else "♡",
-                                    color = if (isFav) Color(0xFFFF2D55) else Color(0xFF6E7D91),
-                                    fontSize = 18.sp
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
+// ==========================================
+// Tuner Status Inside Tuner Card
+// ==========================================
 @Composable
 private fun RadioStatus(
     state: RadioUiState,
@@ -1183,7 +1666,7 @@ private fun RadioStatus(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Tap 🎲 Shuffle or search any place or station to start listening.",
+                        text = "Tap 🎲 Shuffle to stream from random stations worldwide.",
                         color = Color(0xFF7E8B9B),
                         fontSize = 12.sp,
                         textAlign = TextAlign.Center
@@ -1241,7 +1724,6 @@ private fun RadioStatus(
                             )
                         }
 
-                        // Large, easily tappable favorite heart button (44dp target, 26sp, #FF2D55 active)
                         IconButton(
                             onClick = onToggleFavorite,
                             modifier = Modifier.size(44.dp)
@@ -1361,254 +1843,9 @@ private fun RadioStatus(
     }
 }
 
-@Composable
-private fun FavoritesSection(
-    favorites: List<ResolvedStation>,
-    onPlayStation: (ResolvedStation) -> Unit,
-    onRemoveFavorite: (ResolvedStation) -> Unit
-) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "★ FAVORITES",
-                color = Color(0xFFFFD54F),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp
-            )
-            if (favorites.isNotEmpty()) {
-                Spacer(modifier = Modifier.width(8.dp))
-                Box(
-                    modifier = Modifier
-                        .background(Color(0x26FFD54F), RoundedCornerShape(10.dp))
-                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                ) {
-                    Text(
-                        text = "${favorites.size}",
-                        color = Color(0xFFFFD54F),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-        }
-
-        if (favorites.isEmpty()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-                border = BorderStroke(1.dp, Color(0xFF222B38))
-            ) {
-                Text(
-                    text = "No favorites yet. Tap the ♡ heart icon while listening to save stations here!",
-                    color = Color(0xFF6E7D91),
-                    fontSize = 13.sp,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp)
-                )
-            }
-        } else {
-            LazyRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(favorites, key = { it.channelId }) { station ->
-                    StationCard(
-                        station = station,
-                        badgeIcon = "★",
-                        onPlay = { onPlayStation(station) },
-                        onRemove = { onRemoveFavorite(station) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RecentStationsSection(
-    recents: List<ResolvedStation>,
-    currentChannelId: String?,
-    onPlayStation: (ResolvedStation) -> Unit,
-    onToggleFavorite: (ResolvedStation) -> Unit,
-    isFavorite: (String) -> Boolean
-) {
-    if (recents.isEmpty()) return
-
-    val displayList = recents.take(20)
-
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "🕒 RECENT STATIONS",
-                    color = Color(0xFF8E9BAE),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Box(
-                    modifier = Modifier
-                        .background(Color(0xFF1E2632), RoundedCornerShape(10.dp))
-                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                ) {
-                    Text(
-                        text = "${displayList.size} / 20",
-                        color = Color(0xFF8E9BAE),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-        }
-
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            displayList.forEach { station ->
-                val isCurrent = station.channelId == currentChannelId
-                val isFav = isFavorite(station.channelId)
-
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .clickable { onPlayStation(station) },
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isCurrent) Color(0xFF15261D) else Color(0xFF141922)
-                    ),
-                    border = BorderStroke(
-                        1.dp,
-                        if (isCurrent) Color(0xFF00E676) else Color(0xFF222B38)
-                    )
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                text = if (isCurrent) "▶" else "📻",
-                                fontSize = 14.sp,
-                                color = if (isCurrent) Color(0xFF00E676) else Color.White
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text(
-                                    text = station.title,
-                                    color = if (isCurrent) Color(0xFF00E676) else Color.White,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = station.location,
-                                    color = Color(0xFF8E9BAE),
-                                    fontSize = 11.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-
-                        IconButton(
-                            onClick = { onToggleFavorite(station) },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Text(
-                                text = if (isFav) "♥" else "♡",
-                                color = if (isFav) Color(0xFFFF2D55) else Color(0xFF6E7D91),
-                                fontSize = 18.sp
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun StationCard(
-    station: ResolvedStation,
-    badgeIcon: String,
-    onPlay: () -> Unit,
-    onRemove: (() -> Unit)?
-) {
-    Card(
-        modifier = Modifier
-            .width(175.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .clickable(onClick = onPlay),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-        border = BorderStroke(1.dp, Color(0xFF222B38))
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(text = badgeIcon, fontSize = 13.sp)
-                if (onRemove != null) {
-                    IconButton(
-                        onClick = onRemove,
-                        modifier = Modifier.size(20.dp)
-                    ) {
-                        Text("✕", color = Color(0xFF6E7D91), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = station.title,
-                color = Color.White,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = station.location,
-                color = Color(0xFF8E9BAE),
-                fontSize = 11.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
+// ==========================================
+// Helper Buttons
+// ==========================================
 @Composable
 private fun TimerButton(
     label: String,
