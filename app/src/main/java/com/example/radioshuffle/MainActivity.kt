@@ -35,6 +35,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
+import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -47,32 +48,63 @@ import retrofit2.http.GET
 import retrofit2.http.Path
 import java.util.concurrent.TimeUnit
 
-// --- Models ---
-data class PlacesResponse(val data: PlacesData?)
-data class PlacesData(val list: List<PlaceItem>?)
-data class PlaceItem(val id: String, val title: String, val country: String, val size: Int?)
+// -----------------------------------------------------------------------------
+// 1. DATA MODELS MATCHING RADIO GARDEN'S EXACT SCHEMA
+// -----------------------------------------------------------------------------
+data class PlacesEnvelope(
+    @SerializedName("data") val data: PlacesData?
+)
 
-data class ChannelsResponse(val data: ChannelsData?)
-data class ChannelsData(val content: List<ChannelBlock>?)
-data class ChannelBlock(val itemsType: String?, val items: List<StationItem>?)
-data class StationItem(val href: String?, val title: String?)
+data class PlacesData(
+    @SerializedName("list") val list: List<PlaceRecord>?
+)
 
-// --- API ---
-interface RadioGardenApi {
+data class PlaceRecord(
+    @SerializedName("id") val id: String,
+    @SerializedName("title") val title: String?,
+    @SerializedName("country") val country: String?,
+    @SerializedName("size") val size: Int?
+)
+
+data class ChannelPageEnvelope(
+    @SerializedName("data") val data: ChannelPageData?
+)
+
+data class ChannelPageData(
+    @SerializedName("content") val content: List<ContentSection>?
+)
+
+data class ContentSection(
+    @SerializedName("itemsType") val itemsType: String?,
+    @SerializedName("items") val items: List<StationRecord>?
+)
+
+data class StationRecord(
+    @SerializedName("href") val href: String?,
+    @SerializedName("title") val title: String?
+)
+
+// -----------------------------------------------------------------------------
+// 2. RETROFIT API SERVICE WITH MANDATORY HEADERS
+// -----------------------------------------------------------------------------
+interface RadioGardenService {
     @GET("ara/content/places")
-    suspend fun getPlaces(): PlacesResponse
+    suspend fun fetchPlaces(): PlacesEnvelope
 
     @GET("ara/content/page/{placeId}/channels")
-    suspend fun getPlaceChannels(@Path("placeId") placeId: String): ChannelsResponse
+    suspend fun fetchChannelsForPlace(@Path("placeId") placeId: String): ChannelPageEnvelope
 
     companion object {
-        fun create(): RadioGardenApi {
-            val client = OkHttpClient.Builder()
+        fun create(): RadioGardenService {
+            val okHttpClient = OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(15, TimeUnit.SECONDS)
                 .addInterceptor { chain ->
                     val request = chain.request().newBuilder()
-                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) RadioGardenShuffler/1.0")
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+                        .header("Accept", "application/json")
+                        .header("Referer", "https://radio.garden/")
+                        .header("Origin", "https://radio.garden")
                         .build()
                     chain.proceed(request)
                 }
@@ -80,15 +112,17 @@ interface RadioGardenApi {
 
             return Retrofit.Builder()
                 .baseUrl("https://radio.garden/api/")
-                .client(client)
+                .client(okHttpClient)
                 .addConverterFactory(GsonConverterFactory.create())
                 .build()
-                .create(RadioGardenApi::class.java)
+                .create(RadioGardenService::class.java)
         }
     }
 }
 
-// --- ViewModel ---
+// -----------------------------------------------------------------------------
+// 3. VIEWMODEL WITH RESILIENT SHUFFLE LOGIC
+// -----------------------------------------------------------------------------
 sealed class RadioUiState {
     object Idle : RadioUiState()
     object Loading : RadioUiState()
@@ -97,9 +131,9 @@ sealed class RadioUiState {
 }
 
 class RadioViewModel : ViewModel() {
-    private val api = RadioGardenApi.create()
+    private val service = RadioGardenService.create()
     private var controller: MediaController? = null
-    private var viablePlaces: List<PlaceItem> = emptyList()
+    private var validPlaces: List<PlaceRecord> = emptyList()
 
     private val _uiState = MutableStateFlow<RadioUiState>(RadioUiState.Idle)
     val uiState: StateFlow<RadioUiState> = _uiState
@@ -115,7 +149,7 @@ class RadioViewModel : ViewModel() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                _uiState.value = RadioUiState.Error("Station offline. Tap Shuffle to try another.")
+                _uiState.value = RadioUiState.Error("Station offline or stream format unsupported. Tap Shuffle!")
             }
         })
     }
@@ -130,76 +164,94 @@ class RadioViewModel : ViewModel() {
         viewModelScope.launch {
             _uiState.value = RadioUiState.Loading
             try {
-                if (viablePlaces.isEmpty()) {
-                    val placesRes = withContext(Dispatchers.IO) { api.getPlaces() }
-                    viablePlaces = placesRes.data?.list?.filter { (it.size ?: 0) > 0 } ?: emptyList()
+                // Step 1: Preload and filter places directory (cache places having size > 0)
+                if (validPlaces.isEmpty()) {
+                    val envelope = withContext(Dispatchers.IO) { service.fetchPlaces() }
+                    validPlaces = envelope.data?.list?.filter { (it.size ?: 0) > 0 } ?: emptyList()
                 }
 
-                if (viablePlaces.isEmpty()) {
-                    _uiState.value = RadioUiState.Error("Failed to fetch places directory.")
+                if (validPlaces.isEmpty()) {
+                    _uiState.value = RadioUiState.Error("Could not retrieve places list from Radio Garden.")
                     return@launch
                 }
 
-                var selectedStation: StationItem? = null
-                var selectedPlace: PlaceItem? = null
+                // Step 2: Pick places at random until an active station is found (up to 5 attempts)
+                var chosenStation: StationRecord? = null
+                var chosenPlace: PlaceRecord? = null
 
-                for (attempt in 0..2) {
-                    val place = viablePlaces.random()
-                    val channelsRes = withContext(Dispatchers.IO) { api.getPlaceChannels(place.id) }
+                for (attempt in 0..4) {
+                    val randomPlace = validPlaces.random()
+                    val page = withContext(Dispatchers.IO) {
+                        try {
+                            service.fetchChannelsForPlace(randomPlace.id)
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
 
-                    val stations = channelsRes.data?.content
-                        ?.filter { it.itemsType == "channel" }
+                    // Extract all valid stations from any block
+                    val candidateStations = page?.data?.content
                         ?.flatMap { it.items ?: emptyList() }
-                        ?.filter { !it.href.isNullOrBlank() && !it.title.isNullOrBlank() }
+                        ?.filter { item ->
+                            !item.href.isNullOrBlank() && item.href.contains("/listen/")
+                        }
 
-                    if (!stations.isNullOrEmpty()) {
-                        selectedStation = stations.random()
-                        selectedPlace = place
+                    if (!candidateStations.isNullOrEmpty()) {
+                        chosenStation = candidateStations.random()
+                        chosenPlace = randomPlace
                         break
                     }
                 }
 
-                if (selectedStation == null || selectedPlace == null) {
-                    _uiState.value = RadioUiState.Error("No active stations found. Try again.")
+                if (chosenStation == null || chosenPlace == null) {
+                    _uiState.value = RadioUiState.Error("Unable to locate active stations. Tap Shuffle again.")
                     return@launch
                 }
 
-                val channelId = selectedStation.href!!.trimEnd('/').substringAfterLast('/')
-                val streamUrl = "https://radio.garden/api/ara/content/listen/$channelId/channel.mp3"
-                val locationName = "${selectedPlace.title}, ${selectedPlace.country}"
-                val stationTitle = selectedStation.title ?: "Unknown Station"
+                // Extract channelId from href format: "/listen/station-slug/channelId"
+                val rawHref = chosenStation.href!!.trimEnd('/')
+                val channelId = rawHref.substringAfterLast('/')
 
+                // Direct Radio Garden audio stream endpoint
+                val streamUrl = "https://radio.garden/api/ara/content/listen/$channelId/channel.mp3"
+                val locationStr = "${chosenPlace.title ?: "Unknown City"}, ${chosenPlace.country ?: ""}"
+                val stationTitle = chosenStation.title ?: "Radio Garden Station"
+
+                // Step 3: Stream through MediaController
                 controller?.let { player ->
                     val metadata = MediaMetadata.Builder()
                         .setTitle(stationTitle)
-                        .setArtist(locationName)
+                        .setArtist(locationStr)
                         .build()
 
-                    val item = MediaItem.Builder()
+                    val mediaItem = MediaItem.Builder()
                         .setUri(streamUrl)
                         .setMediaMetadata(metadata)
                         .build()
 
                     player.stop()
                     player.clearMediaItems()
-                    player.setMediaItem(item)
+                    player.setMediaItem(mediaItem)
                     player.prepare()
                     player.play()
                 }
 
                 _uiState.value = RadioUiState.Playing(
                     title = stationTitle,
-                    location = locationName,
+                    location = locationStr,
                     isPlaying = true
                 )
+
             } catch (e: Exception) {
-                _uiState.value = RadioUiState.Error("Network error. Try again.")
+                _uiState.value = RadioUiState.Error("Connection error: ${e.localizedMessage ?: "Unknown"}")
             }
         }
     }
 }
 
-// --- Activity & UI ---
+// -----------------------------------------------------------------------------
+// 4. MAIN ACTIVITY & COMPOSE USER INTERFACE
+// -----------------------------------------------------------------------------
 class MainActivity : ComponentActivity() {
     private var controllerFuture: ListenableFuture<MediaController>? = null
 
@@ -210,7 +262,7 @@ class MainActivity : ComponentActivity() {
             val context = LocalContext.current
             val viewModel: RadioViewModel = viewModel()
 
-            val permissionLauncher = rememberLauncherForActivityResult(
+            val notificationLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.RequestPermission()
             ) {}
 
@@ -221,7 +273,7 @@ class MainActivity : ComponentActivity() {
                             Manifest.permission.POST_NOTIFICATIONS
                         ) != PackageManager.PERMISSION_GRANTED
                     ) {
-                        permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
                 }
 
@@ -282,10 +334,10 @@ fun RadioScreen(viewModel: RadioViewModel) {
                 when (val current = state) {
                     is RadioUiState.Idle -> {
                         Text(
-                            text = "Tap the Shuffle button to start playing a random station.",
+                            text = "Tap the Shuffle button to stream a random station from anywhere in the world.",
                             color = Color.Gray,
                             textAlign = TextAlign.Center,
-                            fontSize = 16.sp
+                            fontSize = 15.sp
                         )
                     }
                     is RadioUiState.Loading -> {
@@ -300,7 +352,7 @@ fun RadioScreen(viewModel: RadioViewModel) {
                                 fontWeight = FontWeight.Bold,
                                 textAlign = TextAlign.Center
                             )
-                            Spacer(modifier = Modifier.height(10.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 text = current.location,
                                 color = Color(0xFF00E676),
