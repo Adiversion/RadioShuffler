@@ -6,12 +6,15 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
@@ -58,7 +61,6 @@ class PlaybackService : MediaSessionService() {
 
         val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
-        // Request ICY stream headers to parse live playing track titles
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(userAgent)
             .setAllowCrossProtocolRedirects(true)
@@ -86,44 +88,23 @@ class PlaybackService : MediaSessionService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        // Intercept Next / Previous button presses from Bluetooth or Car units
         val callback = object : MediaSession.Callback {
-            override fun onMediaButtonEvent(
-                session: MediaSession,
-                controllerInfo: MediaSession.ControllerInfo,
-                intent: Intent
-            ): Boolean {
-                return super.onMediaButtonEvent(session, controllerInfo, intent)
-            }
-
             override fun onPlayerCommandRequest(
                 session: MediaSession,
                 controllerInfo: MediaSession.ControllerInfo,
                 playerCommand: Int
             ): Int {
+                // Intercept Bluetooth/Headset Next & Previous buttons
+                if (playerCommand == Player.COMMAND_SEEK_TO_NEXT || 
+                    playerCommand == Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM ||
+                    playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS ||
+                    playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
+                ) {
+                    shuffleBackground(session.player)
+                    // Disallow the default seek behavior since live radio has no timeline
+                    return MediaSession.ConnectionResult.RESULT_SUCCESS
+                }
                 return super.onPlayerCommandRequest(session, controllerInfo, playerCommand)
-            }
-
-            // Hook Next Track (skip forward button) to shuffle
-            override fun onSeekToNext(
-                session: MediaSession,
-                controller: MediaSession.ControllerInfo
-            ): ListenableFuture<androidx.media3.session.SessionResult> {
-                shuffleBackground(session.player)
-                return Futures.immediateFuture(
-                    androidx.media3.session.SessionResult(androidx.media3.session.SessionResult.RESULT_SUCCESS)
-                )
-            }
-
-            // Hook Previous Track button to shuffle
-            override fun onSeekToPrevious(
-                session: MediaSession,
-                controller: MediaSession.ControllerInfo
-            ): ListenableFuture<androidx.media3.session.SessionResult> {
-                shuffleBackground(session.player)
-                return Futures.immediateFuture(
-                    androidx.media3.session.SessionResult(androidx.media3.session.SessionResult.RESULT_SUCCESS)
-                )
             }
         }
 
@@ -133,7 +114,7 @@ class PlaybackService : MediaSessionService() {
             .build()
     }
 
-    private fun shuffleBackground(player: androidx.media3.common.Player) {
+    private fun shuffleBackground(player: Player) {
         serviceScope.launch {
             try {
                 if (validPlaces.isEmpty()) {
