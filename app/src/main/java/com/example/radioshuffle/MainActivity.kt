@@ -109,7 +109,7 @@ interface RadioGardenService {
     }
 }
 
-// --- ViewModel ---
+// --- State ---
 sealed class RadioUiState {
     object Idle : RadioUiState()
     object Loading : RadioUiState()
@@ -123,6 +123,7 @@ sealed class RadioUiState {
     data class Error(val message: String) : RadioUiState()
 }
 
+// --- ViewModel with Session State Synchronization ---
 class RadioViewModel : ViewModel() {
     private val service = RadioGardenService.create()
     private var controller: MediaController? = null
@@ -133,6 +134,25 @@ class RadioViewModel : ViewModel() {
 
     fun setController(mediaController: MediaController) {
         this.controller = mediaController
+
+        // ⭐ SYNC ON REOPEN: Check if the background service is already streaming
+        val currentItem = mediaController.currentMediaItem
+        if (currentItem != null) {
+            val meta = currentItem.mediaMetadata
+            val stationTitle = meta.title?.toString() ?: "Radio Station"
+            val locationParts = (meta.artist?.toString() ?: "").split(", ")
+            val city = locationParts.getOrNull(0) ?: ""
+            val country = locationParts.getOrNull(1) ?: ""
+
+            _uiState.value = RadioUiState.Playing(
+                title = stationTitle,
+                city = city,
+                country = country,
+                currentTrack = null,
+                isPlaying = mediaController.isPlaying
+            )
+        }
+
         mediaController.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 val current = _uiState.value
@@ -141,7 +161,6 @@ class RadioViewModel : ViewModel() {
                 }
             }
 
-            // Capture ICY metadata (Live song / artist) emitted by the stream
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 val current = _uiState.value
                 val streamTitle = mediaMetadata.title?.toString()
@@ -150,7 +169,6 @@ class RadioViewModel : ViewModel() {
                 }
             }
 
-            // Sync UI if track changes via Bluetooth buttons
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 mediaItem?.mediaMetadata?.let { meta ->
                     val stationTitle = meta.title?.toString() ?: "Radio Station"
@@ -335,7 +353,6 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        // Header
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
@@ -357,7 +374,6 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             )
         }
 
-        // Center Player Card
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -393,7 +409,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Tap Shuffle or use your Bluetooth headphones' Next button to tune in.",
+                            text = "Tap Shuffle or use your Bluetooth headset to tune in.",
                             color = Color(0xFF7E8B9B),
                             fontSize = 14.sp,
                             textAlign = TextAlign.Center
@@ -416,7 +432,6 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                     }
 
                     is RadioUiState.Playing -> {
-                        // Live indicator badge
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
@@ -441,7 +456,6 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
 
                         Spacer(modifier = Modifier.height(18.dp))
 
-                        // Station name
                         Text(
                             text = current.title,
                             color = Color.White,
@@ -454,7 +468,6 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
 
                         Spacer(modifier = Modifier.height(6.dp))
 
-                        // Location
                         Text(
                             text = "📍 ${current.city}, ${current.country}",
                             color = Color(0xFF00E676),
@@ -465,7 +478,6 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
 
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        // Live song / EPG track badge (if emitted by the station's Icecast stream)
                         if (!current.currentTrack.isNullOrBlank()) {
                             Card(
                                 shape = RoundedCornerShape(12.dp),
@@ -490,7 +502,6 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                             Spacer(modifier = Modifier.height(16.dp))
                         }
 
-                        // Play / Pause & Skip Controls
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Center
@@ -546,7 +557,6 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             }
         }
 
-        // Bottom Shuffle Button
         Button(
             onClick = { viewModel.shuffle() },
             modifier = Modifier
