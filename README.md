@@ -48,18 +48,19 @@ No algorithms. No user tracking. No subscription fees. Just pure, spontaneous li
 
 ---
 
-## 📲 Installation
+## 📲 Installation & Updates
 
-### Option 1: Direct APK Download
-Download the latest signed APK from the [GitHub Releases](https://github.com/Adiversion/radioshuffler/releases) page:
+### Option 1: Direct APK Download (Built-in In-App Updates)
+Download the latest signed APK directly from the [GitHub Releases](https://github.com/Adiversion/radioshuffler/releases) page:
 1. Download `RadioShuffler.apk`.
 2. Open the file and tap **Install** (allow "Install unknown apps" if prompted).
+3. **Built-in In-App Updates**: Radio Shuffler features its own built-in updater! Simply tap the Settings menu (`☰`) in the top right anytime to check for new releases, monitor live download progress, and install updates with a single tap.
 
-### Option 2: Obtainium (Recommended for Automatic Updates)
-[Obtainium](https://github.com/ImranR98/Obtainium) allows you to install and automatically receive background updates directly from GitHub:
-1. Install Obtainium.
-2. Add App $\rightarrow$ Paste `https://github.com/Adiversion/radioshuffler`.
-3. Tap **Add** $\rightarrow$ Obtainium will manage updates seamlessly.
+### Option 2: Obtainium (Optional FOSS Package Manager)
+If you prefer managing updates alongside your other open-source apps using [Obtainium](https://github.com/ImranR98/Obtainium):
+1. Open Obtainium $\rightarrow$ Tap **Add App**.
+2. Paste `https://github.com/Adiversion/radioshuffler`.
+3. Tap **Add** $\rightarrow$ Obtainium can track and update releases seamlessly.
 
 ---
 

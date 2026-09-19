@@ -212,9 +212,9 @@ jobs:
             ---
 
             ### 📲 Installation & Updates
-            - **Direct Install**: Download `RadioShuffler.apk` below and open it on your Android device.
-            - **Automatic Updates (Obtainium)**: Add `https://github.com/Adiversion/radioshuffler` to [Obtainium](https://github.com/ImranR98/Obtainium).
-            - **In-App Updates**: Open Settings (`☰`) inside the app to check for updates.
+            - **Direct Install**: Download `RadioShuffler.apk` below and install it on your Android device.
+            - **Built-in In-App Updates**: Open Settings (`☰`) in the top right of the app anytime to check for releases, monitor live download progress, and update with one tap.
+            - **Obtainium (Optional)**: If you manage your FOSS apps with [Obtainium](https://github.com/ImranR98/Obtainium), add `https://github.com/Adiversion/radioshuffler` to track releases.
           files: release_output/RadioShuffler.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
