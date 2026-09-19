@@ -50,6 +50,7 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.GET
 import retrofit2.http.Path
+import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
 
 // --- Models ---
@@ -118,16 +119,21 @@ sealed class RadioUiState {
         val city: String,
         val country: String,
         val currentTrack: String?,
-        val isPlaying: Boolean
+        val isPlaying: Boolean,
+        val isBuffering: Boolean = false
     ) : RadioUiState()
     data class Error(val message: String) : RadioUiState()
 }
 
-// --- ViewModel with Session State Synchronization ---
+// --- ViewModel ---
 class RadioViewModel : ViewModel() {
     private val service = RadioGardenService.create()
     private var controller: MediaController? = null
     private var validPlaces: List<PlaceRecord> = emptyList()
+    private val secureRandom = SecureRandom()
+    
+    // Ring buffer of recently played station IDs to avoid repeats
+    private val recentlyPlayedIds = ArrayDeque<String>(30)
 
     private val _uiState = MutableStateFlow<RadioUiState>(RadioUiState.Idle)
     val uiState: StateFlow<RadioUiState> = _uiState
@@ -135,7 +141,6 @@ class RadioViewModel : ViewModel() {
     fun setController(mediaController: MediaController) {
         this.controller = mediaController
 
-        // ⭐ SYNC ON REOPEN: Check if the background service is already streaming
         val currentItem = mediaController.currentMediaItem
         if (currentItem != null) {
             val meta = currentItem.mediaMetadata
@@ -149,11 +154,21 @@ class RadioViewModel : ViewModel() {
                 city = city,
                 country = country,
                 currentTrack = null,
-                isPlaying = mediaController.isPlaying
+                isPlaying = mediaController.isPlaying,
+                isBuffering = mediaController.playbackState == Player.STATE_BUFFERING
             )
         }
 
         mediaController.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                val current = _uiState.value
+                if (current is RadioUiState.Playing) {
+                    _uiState.value = current.copy(
+                        isBuffering = (playbackState == Player.STATE_BUFFERING)
+                    )
+                }
+            }
+
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 val current = _uiState.value
                 if (current is RadioUiState.Playing) {
@@ -181,7 +196,8 @@ class RadioViewModel : ViewModel() {
                         city = city,
                         country = country,
                         currentTrack = null,
-                        isPlaying = true
+                        isPlaying = true,
+                        isBuffering = true
                     )
                 }
             }
@@ -198,17 +214,14 @@ class RadioViewModel : ViewModel() {
         }
     }
 
-    fun nextStation() {
-        controller?.seekToNext()
-    }
-
     fun shuffle() {
         viewModelScope.launch {
             _uiState.value = RadioUiState.Loading
             try {
                 if (validPlaces.isEmpty()) {
                     val envelope = withContext(Dispatchers.IO) { service.fetchPlaces() }
-                    validPlaces = envelope.data?.list?.filter { (it.size ?: 0) > 0 } ?: emptyList()
+                    // Filter cities with verified size and thoroughly shuffle the master list
+                    validPlaces = envelope.data?.list?.filter { (it.size ?: 0) > 0 }?.shuffled(secureRandom) ?: emptyList()
                 }
 
                 if (validPlaces.isEmpty()) {
@@ -221,8 +234,11 @@ class RadioViewModel : ViewModel() {
                 var resolvedCity: String? = null
                 var resolvedCountry: String? = null
 
-                for (attempt in 0..5) {
-                    val randomPlace = validPlaces.random()
+                // Pick from anywhere in the global list using SecureRandom jump intervals
+                for (attempt in 0..8) {
+                    val randomIndex = secureRandom.nextInt(validPlaces.size)
+                    val randomPlace = validPlaces[randomIndex]
+
                     val page = withContext(Dispatchers.IO) {
                         try {
                             service.fetchChannelsForPlace(randomPlace.id)
@@ -235,17 +251,28 @@ class RadioViewModel : ViewModel() {
                         ?.flatMap { it.items ?: emptyList() }
                         ?.mapNotNull { it.page }
                         ?.filter { !it.url.isNullOrBlank() }
+                        ?.shuffled(secureRandom)
                         ?: emptyList()
 
-                    if (validStations.isNotEmpty()) {
-                        val station = validStations.random()
-                        val channelId = station.url!!.trimEnd('/').substringAfterLast('/')
+                    // Exclude recently heard channels
+                    val candidate = validStations.firstOrNull { station ->
+                        val id = station.url!!.trimEnd('/').substringAfterLast('/')
+                        !recentlyPlayedIds.contains(id)
+                    } ?: validStations.firstOrNull()
 
+                    if (candidate != null) {
+                        val channelId = candidate.url!!.trimEnd('/').substringAfterLast('/')
                         if (channelId.isNotBlank()) {
                             resolvedChannelId = channelId
-                            resolvedTitle = station.title ?: "World Radio"
-                            resolvedCity = station.place?.title ?: randomPlace.title ?: "Unknown City"
-                            resolvedCountry = station.country?.title ?: randomPlace.country ?: "Worldwide"
+                            resolvedTitle = candidate.title ?: "World Radio"
+                            resolvedCity = candidate.place?.title ?: randomPlace.title ?: "Unknown City"
+                            resolvedCountry = candidate.country?.title ?: randomPlace.country ?: "Worldwide"
+                            
+                            // Track in ring buffer
+                            if (recentlyPlayedIds.size >= 30) {
+                                recentlyPlayedIds.removeFirst()
+                            }
+                            recentlyPlayedIds.addLast(channelId)
                             break
                         }
                     }
@@ -282,7 +309,8 @@ class RadioViewModel : ViewModel() {
                     city = resolvedCity ?: "",
                     country = resolvedCountry ?: "",
                     currentTrack = null,
-                    isPlaying = true
+                    isPlaying = true,
+                    isBuffering = true
                 )
 
             } catch (e: Exception) {
@@ -353,6 +381,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
+        // Top Header
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
@@ -374,6 +403,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             )
         }
 
+        // Center Tuner Card
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -409,7 +439,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Tap Shuffle or use your Bluetooth headset to tune in.",
+                            text = "Tap the Shuffle button below or use your headset controls to start streaming.",
                             color = Color(0xFF7E8B9B),
                             fontSize = 14.sp,
                             textAlign = TextAlign.Center
@@ -432,22 +462,30 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                     }
 
                     is RadioUiState.Playing -> {
+                        // Live / Buffering Badge
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .background(Color(0x1A00E676), RoundedCornerShape(20.dp))
+                                .background(
+                                    if (current.isBuffering) Color(0x26FFC107) else Color(0x1A00E676),
+                                    RoundedCornerShape(20.dp)
+                                )
                                 .padding(horizontal = 12.dp, vertical = 4.dp)
                         ) {
                             Box(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFF00E676))
+                                    .background(if (current.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676))
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (current.isPlaying) "LIVE STREAM" else "PAUSED",
-                                color = Color(0xFF00E676),
+                                text = when {
+                                    current.isBuffering -> "BUFFERING..."
+                                    current.isPlaying -> "LIVE STREAM"
+                                    else -> "PAUSED"
+                                },
+                                color = if (current.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 1.sp
@@ -456,6 +494,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
 
                         Spacer(modifier = Modifier.height(18.dp))
 
+                        // Station Title
                         Text(
                             text = current.title,
                             color = Color.White,
@@ -468,6 +507,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
 
                         Spacer(modifier = Modifier.height(6.dp))
 
+                        // Location
                         Text(
                             text = "📍 ${current.city}, ${current.country}",
                             color = Color(0xFF00E676),
@@ -478,6 +518,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
 
                         Spacer(modifier = Modifier.height(16.dp))
 
+                        // In-stream Track Badge
                         if (!current.currentTrack.isNullOrBlank()) {
                             Card(
                                 shape = RoundedCornerShape(12.dp),
@@ -502,45 +543,37 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                             Spacer(modifier = Modifier.height(16.dp))
                         }
 
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
+                        // Play/Pause Control with Spinner on Buffer
+                        Box(
+                            modifier = Modifier.size(72.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            IconButton(
-                                onClick = { viewModel.togglePlayPause() },
-                                modifier = Modifier
-                                    .size(64.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        Brush.verticalGradient(
-                                            listOf(Color(0xFF222C3A), Color(0xFF18202B))
-                                        )
-                                    )
-                                    .border(1.5.dp, Color(0xFF2F3C4E), CircleShape)
-                            ) {
-                                Text(
-                                    text = if (current.isPlaying) "❚❚" else "▶",
-                                    color = Color.White,
-                                    fontSize = 20.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.width(20.dp))
-
-                            IconButton(
-                                onClick = { viewModel.nextStation() },
-                                modifier = Modifier
-                                    .size(52.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF1A222D))
-                                    .border(1.dp, Color(0xFF2B3645), CircleShape)
-                            ) {
-                                Text(
-                                    text = "⏭",
+                            if (current.isBuffering) {
+                                CircularProgressIndicator(
                                     color = Color(0xFF00E676),
-                                    fontSize = 18.sp
+                                    strokeWidth = 3.dp,
+                                    modifier = Modifier.size(54.dp)
                                 )
+                            } else {
+                                IconButton(
+                                    onClick = { viewModel.togglePlayPause() },
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(CircleShape)
+                                        .background(
+                                            Brush.verticalGradient(
+                                                listOf(Color(0xFF222C3A), Color(0xFF18202B))
+                                            )
+                                        )
+                                        .border(1.5.dp, Color(0xFF2F3C4E), CircleShape)
+                                ) {
+                                    Text(
+                                        text = if (current.isPlaying) "❚❚" else "▶",
+                                        color = Color.White,
+                                        fontSize = 22.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
                         }
                     }
@@ -557,6 +590,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             }
         }
 
+        // Shuffle Action
         Button(
             onClick = { viewModel.shuffle() },
             modifier = Modifier
