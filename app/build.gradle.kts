@@ -25,8 +25,8 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmToolchain(17)
+    kotlin {
+     jvmToolchain(17)
     }
     buildFeatures {
         compose = true
