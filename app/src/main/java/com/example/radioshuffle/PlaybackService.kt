@@ -5,9 +5,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
-import android.media.AudioManager
-import android.media.ToneGenerator
 import android.os.Build
+import android.view.KeyEvent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
@@ -19,10 +18,13 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
+import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionResult
+import com.google.common.collect.ImmutableList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -46,12 +48,14 @@ class PlaybackService : MediaSessionService() {
 
         createNotificationChannel()
 
-        val notificationProvider = DefaultMediaNotificationProvider.Builder(this)
+        val defaultNotificationProvider = DefaultMediaNotificationProvider.Builder(this)
             .setChannelId(NOTIFICATION_CHANNEL_ID)
             .setNotificationId(NOTIFICATION_ID)
             .build()
-        notificationProvider.setSmallIcon(R.drawable.media3_notification_small_icon)
-        setMediaNotificationProvider(notificationProvider)
+        defaultNotificationProvider.setSmallIcon(R.drawable.ic_radio_notification)
+
+        val customNotificationProvider = CustomMediaNotificationProvider(defaultNotificationProvider)
+        setMediaNotificationProvider(customNotificationProvider)
 
         serviceScope.launch(Dispatchers.IO) {
             repository.warmUp()
@@ -99,7 +103,7 @@ class PlaybackService : MediaSessionService() {
                         consecutiveAutoSkips = 0
                         if (pendingShuffleCue) {
                             pendingShuffleCue = false
-                            playShuffleCompleteCue()
+                            SoundFeedback.playShuffleConnected()
                         }
                     }
                     Player.STATE_ENDED -> {
@@ -144,18 +148,22 @@ class PlaybackService : MediaSessionService() {
             }
 
             override fun seekToNext() {
+                SoundFeedback.playShuffleTriggered()
                 shuffleBackground(this, playCue = true)
             }
 
             override fun seekToNextMediaItem() {
+                SoundFeedback.playShuffleTriggered()
                 shuffleBackground(this, playCue = true)
             }
 
             override fun seekToPrevious() {
+                SoundFeedback.playShuffleTriggered()
                 shuffleBackground(this, playCue = true)
             }
 
             override fun seekToPreviousMediaItem() {
+                SoundFeedback.playShuffleTriggered()
                 shuffleBackground(this, playCue = true)
             }
         }
@@ -177,10 +185,39 @@ class PlaybackService : MediaSessionService() {
                     playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS ||
                     playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
                 ) {
+                    SoundFeedback.playShuffleTriggered()
                     shuffleBackground(session.player, playCue = true)
                     return SessionResult.RESULT_INFO_SKIPPED
                 }
                 return super.onPlayerCommandRequest(session, controllerInfo, playerCommand)
+            }
+
+            override fun onMediaButtonEvent(
+                session: MediaSession,
+                controllerInfo: MediaSession.ControllerInfo,
+                intent: Intent
+            ): Boolean {
+                @Suppress("DEPRECATION")
+                val keyEvent: KeyEvent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+                } else {
+                    intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
+                }
+                if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
+                    when (keyEvent.keyCode) {
+                        KeyEvent.KEYCODE_MEDIA_NEXT,
+                        KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                        KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+                        KeyEvent.KEYCODE_MEDIA_REWIND,
+                        KeyEvent.KEYCODE_MEDIA_STEP_FORWARD,
+                        KeyEvent.KEYCODE_MEDIA_STEP_BACKWARD -> {
+                            SoundFeedback.playShuffleTriggered()
+                            shuffleBackground(session.player, playCue = true)
+                            return true
+                        }
+                    }
+                }
+                return super.onMediaButtonEvent(session, controllerInfo, intent)
             }
         }
 
@@ -231,30 +268,28 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private fun playShuffleCompleteCue() {
-        try {
-            val tone = ToneGenerator(AudioManager.STREAM_MUSIC, 45)
-            tone.startTone(ToneGenerator.TONE_PROP_ACK, 140)
-            serviceScope.launch {
-                delay(250)
-                tone.release()
-            }
-        } catch (_: RuntimeException) {
-            // Some devices reject ToneGenerator while audio focus is changing.
-        }
-    }
-
     private fun ResolvedStation.toMediaItem(): MediaItem {
+        val artworkBytes = StationArtwork.getArtworkData(this@PlaybackService)
+        val artworkUri = StationArtwork.getArtworkUri(this@PlaybackService)
+
+        val metaBuilder = MediaMetadata.Builder()
+            .setTitle(title)
+            .setDisplayTitle(title)
+            .setArtist(location)
+            .setSubtitle(location)
+            .setDescription(channelId)
+            .setIsPlayable(true)
+            .setMediaType(MediaMetadata.MEDIA_TYPE_RADIO_STATION)
+            .setArtworkUri(artworkUri)
+
+        if (artworkBytes != null) {
+            metaBuilder.setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+        }
+
         return MediaItem.Builder()
             .setMediaId(channelId)
             .setUri(streamUrl)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(title)
-                    .setArtist(location)
-                    .setDescription(channelId)
-                    .build()
-            )
+            .setMediaMetadata(metaBuilder.build())
             .build()
     }
 
@@ -291,9 +326,38 @@ class PlaybackService : MediaSessionService() {
     }
 
     companion object {
-        const val NOTIFICATION_CHANNEL_ID = "radioshuffler_playback_channel_v2"
+        const val NOTIFICATION_CHANNEL_ID = "radioshuffler_playback_channel_v3"
         const val NOTIFICATION_ID = 1001
         private const val STATION_START_GRACE_MS = 18_000L
         private const val MAX_AUTO_SKIPS = 3
+    }
+}
+
+private class CustomMediaNotificationProvider(
+    private val defaultProvider: DefaultMediaNotificationProvider
+) : MediaNotification.Provider {
+    override fun createNotification(
+        mediaSession: MediaSession,
+        customLayout: ImmutableList<CommandButton>,
+        actionFactory: MediaNotification.ActionFactory,
+        onNotificationChangedListener: MediaNotification.Provider.Callback
+    ): MediaNotification {
+        val mediaNotification = defaultProvider.createNotification(
+            mediaSession,
+            customLayout,
+            actionFactory,
+            onNotificationChangedListener
+        )
+        mediaNotification.notification.visibility = Notification.VISIBILITY_PUBLIC
+        mediaNotification.notification.category = Notification.CATEGORY_TRANSPORT
+        return mediaNotification
+    }
+
+    override fun handleCustomCommand(
+        session: MediaSession,
+        action: String,
+        extras: android.os.Bundle
+    ): Boolean {
+        return defaultProvider.handleCustomCommand(session, action, extras)
     }
 }

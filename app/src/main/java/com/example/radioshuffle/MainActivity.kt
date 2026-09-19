@@ -269,6 +269,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
     fun shuffle(query: String? = null, automatic: Boolean = false) {
         val cleanQuery = query?.trim()?.takeIf { it.isNotBlank() } ?: if (!automatic) _activeQuery.value else null
         if (!automatic) {
+            SoundFeedback.playShuffleTriggered()
             _activeQuery.value = cleanQuery
             lastQuery = cleanQuery
             shuffleJob?.cancel()
@@ -328,10 +329,10 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         searchJob = viewModelScope.launch {
             _isSearching.value = true
             try {
-                val list = withContext(Dispatchers.IO) {
+                val results = withContext(Dispatchers.IO) {
                     repository.searchStations(cleanQuery)
                 }
-                _searchResults.value = list
+                _searchResults.value = results
             } catch (_: Exception) {
                 _searchResults.value = emptyList()
             } finally {
@@ -433,6 +434,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playSpecificStation(station: ResolvedStation, query: String? = null) {
+        SoundFeedback.playShuffleTriggered()
         if (query != null) {
             _activeQuery.value = query.trim().takeIf { it.isNotBlank() }
         }
@@ -458,16 +460,28 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         _recents.value = favoritesManager.getRecents()
         _isCurrentFavorite.value = favoritesManager.isFavorite(station.channelId)
 
-        val metadata = MediaMetadata.Builder()
+        val context = getApplication<Application>()
+        val artworkBytes = StationArtwork.getArtworkData(context)
+        val artworkUri = StationArtwork.getArtworkUri(context)
+
+        val metadataBuilder = MediaMetadata.Builder()
             .setTitle(station.title)
+            .setDisplayTitle(station.title)
             .setArtist(station.location)
+            .setSubtitle(station.location)
             .setDescription(station.channelId)
-            .build()
+            .setIsPlayable(true)
+            .setMediaType(MediaMetadata.MEDIA_TYPE_RADIO_STATION)
+            .setArtworkUri(artworkUri)
+
+        if (artworkBytes != null) {
+            metadataBuilder.setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+        }
 
         val mediaItem = MediaItem.Builder()
             .setMediaId(station.channelId)
             .setUri(station.streamUrl)
-            .setMediaMetadata(metadata)
+            .setMediaMetadata(metadataBuilder.build())
             .build()
 
         controller?.let { player ->
@@ -580,25 +594,6 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
     var currentTab by remember { mutableStateOf(NavTab.RADIO) }
     var showSettingsSheet by remember { mutableStateOf(false) }
 
-    var hasNotificationPermission by remember {
-        mutableStateOf(
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.POST_NOTIFICATIONS
-                ) == PackageManager.PERMISSION_GRANTED
-            } else {
-                NotificationManagerCompat.from(context).areNotificationsEnabled()
-            }
-        )
-    }
-
-    val notificationLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasNotificationPermission = granted
-    }
-
     val currentChannelId = (state as? RadioUiState.Playing)?.channelId
 
     Scaffold(
@@ -687,17 +682,6 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
     if (showSettingsSheet) {
         SettingsBottomSheet(
             onDismiss = { showSettingsSheet = false },
-            hasNotificationPermission = hasNotificationPermission,
-            onRequestNotificationPermission = {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                } else {
-                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                    }
-                    context.startActivity(intent)
-                }
-            },
             sleepTimerMinutes = sleepTimerMinutes,
             onSetSleepTimer = viewModel::setSleepTimer,
             updateState = updateState,
@@ -1699,8 +1683,6 @@ private fun BottomNavBar(
 @Composable
 private fun SettingsBottomSheet(
     onDismiss: () -> Unit,
-    hasNotificationPermission: Boolean,
-    onRequestNotificationPermission: () -> Unit,
     sleepTimerMinutes: Int?,
     onSetSleepTimer: (Int?) -> Unit,
     updateState: UpdateUiState,
@@ -1805,73 +1787,7 @@ private fun SettingsBottomSheet(
             // Divider
             Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF222B38)))
 
-            // 2. Lock Screen & Notification Controls
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.ic_notifications),
-                        contentDescription = null,
-                        tint = Color(0xFF00E676),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Lock Screen Player",
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1B2330)),
-                    border = BorderStroke(1.dp, Color(0xFF2C394B))
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = if (hasNotificationPermission) "Controls enabled" else "Permission required",
-                                color = if (hasNotificationPermission) Color(0xFF00E676) else Color(0xFFFFB300),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = if (hasNotificationPermission)
-                                    "MIUI/HyperOS tip: Ensure notification visibility on lock screen is set to 'Show all notifications'."
-                                else
-                                    "Allows media controls on lock screen and notification drawer.",
-                                color = Color(0xFF8E9BAE),
-                                fontSize = 11.sp
-                            )
-                        }
-
-                        if (!hasNotificationPermission) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = onRequestNotificationPermission,
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                            ) {
-                                Text("Enable", color = Color(0xFF0A1017), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Divider
-            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF222B38)))
-
-            // 3. GitHub App Updates
+            // 2. App Updates
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
@@ -2190,32 +2106,48 @@ private fun UpdateControls(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(48.dp),
-            shape = RoundedCornerShape(24.dp)
+            shape = RoundedCornerShape(24.dp),
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = Color(0xFF1B2330),
+                contentColor = Color.White,
+                disabledContainerColor = Color(0xFF18202B),
+                disabledContentColor = Color.White
+            ),
+            border = BorderStroke(1.dp, Color(0xFF2C394B))
         ) {
-            Text("Check for app update", fontSize = 13.sp)
+            if (updateState is UpdateUiState.Checking) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = Color(0xFF00E676)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "Checking GitHub releases...",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White
+                )
+            } else {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_update),
+                    contentDescription = null,
+                    tint = Color(0xFF00E676),
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Check for app update",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White
+                )
+            }
         }
 
         when (updateState) {
             UpdateUiState.Idle -> Unit
-            UpdateUiState.Checking -> {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 2.dp,
-                        color = Color(0xFF00E676)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "Checking GitHub releases...",
-                        color = Color(0xFF8E9BAE),
-                        fontSize = 12.sp
-                    )
-                }
-            }
+            UpdateUiState.Checking -> Unit
             is UpdateUiState.Downloading -> {
                 Column(
                     modifier = Modifier
@@ -2284,13 +2216,33 @@ private fun UpdateControls(
                 )
             }
             UpdateUiState.NoUpdate -> {
-                Text(
-                    text = "You are already on the latest release.",
-                    color = Color(0xFF8E9BAE),
-                    fontSize = 12.sp,
-                    textAlign = TextAlign.Center,
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF16202C)),
+                    border = BorderStroke(1.dp, Color(0xFF223041)),
                     modifier = Modifier.fillMaxWidth()
-                )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_radio),
+                            contentDescription = null,
+                            tint = Color(0xFF00E676),
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "You are already on the latest release.",
+                            color = Color(0xFF8E9BAE),
+                            fontSize = 12.sp
+                        )
+                    }
+                }
             }
             UpdateUiState.NeedsInstallPermission -> {
                 Text(

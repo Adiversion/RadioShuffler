@@ -25,7 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 🛠 Fixed
 - **Live Stream Dropping**: Fixed an issue where cycling stream connections (e.g. KIIS FM / iHeartRadio streams) sent `STATE_ENDED` and skipped stations. ExoPlayer now automatically reconnects live streams without auto-skipping.
 - **Favorite Desynchronization**: Bound `channelId` directly into `MediaItem.mediaId` and `MediaMetadata.description`. In `onMediaItemTransition`, the active station is synchronized with `currentStation` and `isCurrentFavorite`, ensuring the heart button always favorites the exact stream playing.
-- **Lock Screen Media Controls**: Upgraded notification channel to `IMPORTANCE_DEFAULT` with `VISIBILITY_PUBLIC` on channel `radioshuffler_playback_channel_v2` to prevent Xiaomi / HyperOS / MIUI from suppressing lock screen widgets.
+- **Lock Screen & HyperOS 3 Super Island Player**:
+  - Implemented `CustomMediaNotificationProvider` to ensure every media notification is stamped with `NotificationCompat.CATEGORY_TRANSPORT` and `NotificationCompat.VISIBILITY_PUBLIC`.
+  - Upgraded notification channel to `radioshuffler_playback_channel_v3` with public lockscreen visibility.
+  - Added rasterized `artworkData` (PNG bytes) and `artworkUri` via `StationArtwork` along with `MEDIA_TYPE_RADIO_STATION`, ensuring Xiaomi HyperOS 3 Super Island (Dynamic Island / Live Updates) and Android SystemUI display the station badge properly.
+- **Bluetooth Headset & Hardware Shuffling (`SoundFeedback`)**:
+  - Added `<action android:name="android.intent.action.MEDIA_BUTTON" />` to `PlaybackService` and implemented `onMediaButtonEvent` in `MediaSession.Callback` for Bluetooth headset AVRCP controls (e.g. volume button long-press).
+  - Created `SoundFeedback` using `STREAM_MUSIC`: plays an immediate crisp auditory beep (130ms) the millisecond a shuffle is triggered, giving instant confirmation for visually impaired and hands-free users before network streaming begins, followed by an ACK chime on stream connection.
+- **Update Button Polish & Settings Streamlining**:
+  - Redesigned "Check for app update" button with high-contrast styling and embedded progress spinner, preventing the button text from disappearing while checking releases.
+  - Removed redundant "Lock Screen Player" card from the Settings & Controls bottom sheet.
 - **ResolvedStation Constructor**: Removed invalid `streamUrl` constructor parameter to ensure clean Kotlin compilation.
 - **Double Status Bar Top Padding**: Removed redundant `statusBarsPadding()` from the Radio, Search, and Library tabs because `Scaffold` already consumed the status bar inset, eliminating the oversized blank space at the top of every screen.
 - **Outlined Heart Vector Sizing**: Replaced the thin unicode `"♡"` glyph with a standard Material 2dp-stroke `ic_favorite_border` vector drawable, giving the unfavorited heart a bold, normal size consistent with Material 3.
