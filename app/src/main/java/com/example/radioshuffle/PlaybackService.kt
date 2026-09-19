@@ -13,10 +13,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
-import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
-import com.google.common.util.concurrent.Futures
-import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -94,15 +91,15 @@ class PlaybackService : MediaSessionService() {
                 controllerInfo: MediaSession.ControllerInfo,
                 playerCommand: Int
             ): Int {
-                // Intercept Bluetooth/Headset Next & Previous buttons
-                if (playerCommand == Player.COMMAND_SEEK_TO_NEXT || 
+                // Intercept Bluetooth / Headset / Notification Next & Previous buttons
+                if (playerCommand == Player.COMMAND_SEEK_TO_NEXT ||
                     playerCommand == Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM ||
                     playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS ||
                     playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
                 ) {
                     shuffleBackground(session.player)
-                    // Disallow the default seek behavior since live radio has no timeline
-                    return MediaSession.ConnectionResult.RESULT_SUCCESS
+                    // Return SessionResult.RESULT_INFO_SKIPPED to tell ExoPlayer we handled the custom action
+                    return SessionResult.RESULT_INFO_SKIPPED
                 }
                 return super.onPlayerCommandRequest(session, controllerInfo, playerCommand)
             }
