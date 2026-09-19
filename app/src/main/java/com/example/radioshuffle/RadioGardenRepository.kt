@@ -418,7 +418,7 @@ class RadioGardenRepository(
 
             val freshStations = executeSearch(query)
             if (freshStations.isNotEmpty()) {
-                cachedSearchStations.addAll(freshStations)
+                cachedSearchStations.addAll(freshStations.shuffled(random))
                 val chosen = cachedSearchStations.firstOrNull { !isRecentlyPlayed(it.channelId) }
                     ?: cachedSearchStations.first()
                 cachedSearchStations.remove(chosen)
@@ -434,8 +434,8 @@ class RadioGardenRepository(
 
         // Local search in places list (for cities, countries)
         val localPlaceMatches = searchLocalPlaces(query)
-        for (place in localPlaceMatches.shuffled(random).take(3)) {
-            val stations = fetchStationsForPlace(place)
+        for (place in localPlaceMatches.shuffled(random).take(6)) {
+            val stations = fetchStationsForPlace(place).shuffled(random)
             if (stations.isNotEmpty()) {
                 val chosen = stations.firstOrNull { !isRecentlyPlayed(it.channelId) } ?: stations.first()
                 rememberStation(chosen)

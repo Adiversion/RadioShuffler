@@ -155,6 +155,9 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow<RadioUiState>(RadioUiState.Idle)
     val uiState: StateFlow<RadioUiState> = _uiState
 
+    private val _activeQuery = MutableStateFlow<String?>(null)
+    val activeQuery: StateFlow<String?> = _activeQuery
+
     private val _searchResults = MutableStateFlow<List<ResolvedStation>?>(null)
     val searchResults: StateFlow<List<ResolvedStation>?> = _searchResults
 
@@ -263,8 +266,9 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun shuffle(query: String? = null, automatic: Boolean = false) {
-        val cleanQuery = query?.trim()?.takeIf { it.isNotBlank() }
+        val cleanQuery = query?.trim()?.takeIf { it.isNotBlank() } ?: if (!automatic) _activeQuery.value else null
         if (!automatic) {
+            _activeQuery.value = cleanQuery
             lastQuery = cleanQuery
             shuffleJob?.cancel()
         }
@@ -276,7 +280,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             _uiState.value = RadioUiState.Loading(
-                if (cleanQuery == null) "Tuning global frequencies..." else "Searching “$cleanQuery”..."
+                if (cleanQuery == null) "Tuning global frequencies..." else "Shuffling “$cleanQuery” radio..."
             )
 
             try {
@@ -300,6 +304,17 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.value = RadioUiState.Error("Connection error: ${e.localizedMessage ?: "Unknown"}")
             }
         }
+    }
+
+    fun shuffleWorldwide() {
+        _activeQuery.value = null
+        lastQuery = null
+        shuffle(query = null)
+    }
+
+    fun clearActiveQuery() {
+        _activeQuery.value = null
+        lastQuery = null
     }
 
     fun searchStations(query: String) {
@@ -416,7 +431,10 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun playSpecificStation(station: ResolvedStation) {
+    fun playSpecificStation(station: ResolvedStation, query: String? = null) {
+        if (query != null) {
+            _activeQuery.value = query.trim().takeIf { it.isNotBlank() }
+        }
         shuffleJob?.cancel()
         shuffleJob = viewModelScope.launch {
             if (controller == null) {
@@ -549,6 +567,7 @@ class MainActivity : ComponentActivity() {
 fun ModernRadioScreen(viewModel: RadioViewModel) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val activeQuery by viewModel.activeQuery.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
     val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
@@ -617,10 +636,12 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                 NavTab.RADIO -> {
                     RadioTabContent(
                         state = state,
+                        activeQuery = activeQuery,
                         isFavorite = isFavorite,
                         onToggleFavorite = viewModel::toggleFavorite,
                         onTogglePlayPause = viewModel::togglePlayPause,
-                        onShuffle = { genre -> viewModel.shuffle(genre) },
+                        onShuffle = { query -> viewModel.shuffle(query) },
+                        onShuffleWorldwide = { viewModel.shuffleWorldwide() },
                         onOpenSettings = { showSettingsSheet = true }
                     )
                 }
@@ -635,7 +656,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                             currentTab = NavTab.RADIO
                         },
                         onPlayStation = { station ->
-                            viewModel.playSpecificStation(station)
+                            viewModel.playSpecificStation(station, query = activeQuery)
                             currentTab = NavTab.RADIO
                         },
                         onClearSearch = { viewModel.clearSearchResults() },
@@ -690,14 +711,16 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
 @Composable
 private fun RadioTabContent(
     state: RadioUiState,
+    activeQuery: String?,
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onShuffle: (String?) -> Unit,
+    onShuffleWorldwide: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     val quickGenres = remember {
-        listOf("Jazz", "Lo-Fi", "Rock", "Classical", "Electronic", "Ambient", "News")
+        listOf("India", "Jazz", "Lo-Fi", "Rock", "Classical", "Electronic", "Ambient", "News")
     }
 
     Column(
@@ -707,7 +730,7 @@ private fun RadioTabContent(
             .statusBarsPadding()
             .padding(horizontal = 20.dp, vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(18.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // Top App Bar
         Row(
@@ -747,6 +770,40 @@ private fun RadioTabContent(
             }
         }
 
+        // Active Query Filter Badge
+        if (activeQuery != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF162130), RoundedCornerShape(20.dp))
+                    .border(BorderStroke(1.dp, Color(0xFF283B52)), RoundedCornerShape(20.dp))
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("📍", fontSize = 13.sp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Shuffling: “$activeQuery”",
+                        color = Color(0xFF00E676),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Text(
+                    text = "Worldwide ✕",
+                    color = Color(0xFF8E9BAE),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onShuffleWorldwide)
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
+
         // Center Tuner Card: Compact ~200dp, stable height, no blank empty space
         Card(
             modifier = Modifier
@@ -772,23 +829,38 @@ private fun RadioTabContent(
             }
         }
 
-        // Main Action: Big Shuffle Button
-        Button(
-            onClick = { onShuffle(null) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(28.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFF00E676),
-                contentColor = Color(0xFF0A120D)
-            )
+        // Main Action: Big Shuffle Button (shuffles worldwide or within activeQuery)
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text(
-                text = "🎲 Shuffle Worldwide Radio",
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold
-            )
+            Button(
+                onClick = { onShuffle(activeQuery) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(28.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF00E676),
+                    contentColor = Color(0xFF0A120D)
+                )
+            ) {
+                Text(
+                    text = if (activeQuery != null) "🎲 Shuffle “$activeQuery” Radio" else "🎲 Shuffle Worldwide Radio",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            if (activeQuery != null) {
+                Text(
+                    text = "Tap again to find another random station in “$activeQuery”",
+                    color = Color(0xFF6E7D91),
+                    fontSize = 11.sp,
+                    textAlign = TextAlign.Center
+                )
+            }
         }
 
         // Quick Shuffle Moods
@@ -797,7 +869,7 @@ private fun RadioTabContent(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = "EXPLORE BY GENRE",
+                text = "EXPLORE BY GENRE OR REGION",
                 color = Color(0xFF6E7D91),
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -809,14 +881,15 @@ private fun RadioTabContent(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(quickGenres) { genre ->
+                    val isSelected = activeQuery.equals(genre, ignoreCase = true)
                     OutlinedButton(
                         onClick = { onShuffle(genre) },
                         shape = RoundedCornerShape(18.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = Color(0xFF141922),
-                            contentColor = Color.White
+                            containerColor = if (isSelected) Color(0x2600E676) else Color(0xFF141922),
+                            contentColor = if (isSelected) Color(0xFF00E676) else Color.White
                         ),
-                        border = BorderStroke(1.dp, Color(0xFF222B38)),
+                        border = BorderStroke(1.dp, if (isSelected) Color(0xFF00E676) else Color(0xFF222B38)),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                     ) {
                         Text(text = genre, fontSize = 12.sp, fontWeight = FontWeight.Medium)
@@ -845,7 +918,7 @@ private fun SearchTabContent(
     var searchText by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
     val suggestions = remember {
-        listOf("KIIS FM", "BBC", "Tokyo", "Paris", "New York", "Berlin", "Jazz", "Ibiza", "Lo-Fi")
+        listOf("India", "KIIS FM", "BBC", "Tokyo", "Paris", "New York", "Berlin", "Jazz", "Ibiza", "Lo-Fi")
     }
 
     Column(
@@ -870,7 +943,7 @@ private fun SearchTabContent(
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             label = { Text("Station, city, country, or genre") },
-            placeholder = { Text("e.g. KIIS FM, Tokyo, jazz, BBC") },
+            placeholder = { Text("e.g. India, KIIS FM, Tokyo, jazz, BBC") },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(
                 onSearch = {
@@ -907,21 +980,6 @@ private fun SearchTabContent(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            OutlinedButton(
-                onClick = {
-                    focusManager.clearFocus()
-                    onSearch(searchText)
-                },
-                enabled = !isSearching,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp),
-                shape = RoundedCornerShape(24.dp),
-                border = BorderStroke(1.dp, Color(0xFF2F3C4E))
-            ) {
-                Text("Search", color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
-
             Button(
                 onClick = {
                     focusManager.clearFocus()
@@ -929,7 +987,7 @@ private fun SearchTabContent(
                 },
                 enabled = !isSearching,
                 modifier = Modifier
-                    .weight(1f)
+                    .weight(1.1f)
                     .height(48.dp),
                 shape = RoundedCornerShape(24.dp),
                 colors = ButtonDefaults.buttonColors(
@@ -937,11 +995,32 @@ private fun SearchTabContent(
                     contentColor = Color(0xFF0A120D)
                 )
             ) {
-                Text("🎲 Shuffle", fontWeight = FontWeight.Bold)
+                Text(
+                    text = if (searchText.isNotBlank()) "🎲 Shuffle “$searchText”" else "🎲 Shuffle",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            OutlinedButton(
+                onClick = {
+                    focusManager.clearFocus()
+                    onSearch(searchText)
+                },
+                enabled = !isSearching,
+                modifier = Modifier
+                    .weight(0.9f)
+                    .height(48.dp),
+                shape = RoundedCornerShape(24.dp),
+                border = BorderStroke(1.dp, Color(0xFF2F3C4E))
+            ) {
+                Text("🔍 Browse List", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         // Virtualized Results List (Smooth 60fps, No Lag!)
         LazyColumn(
@@ -1002,6 +1081,51 @@ private fun SearchTabContent(
                     }
                 }
 
+                // Random Shuffle from Results Banner
+                if (searchResults.isNotEmpty()) {
+                    item {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable { onShuffleQuery(searchText) },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF15261D)),
+                            border = BorderStroke(1.dp, Color(0xFF00E676))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("🎲", fontSize = 18.sp)
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = "Random Pick from “${searchText.ifBlank { "Search" }}”",
+                                            color = Color(0xFF00E676),
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "Let the app randomly choose a unique station",
+                                            color = Color(0xFF8E9BAE),
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                                Text("▶ Play", color = Color(0xFF00E676), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
                 if (searchResults.isEmpty()) {
                     item {
                         Card(
@@ -1037,7 +1161,7 @@ private fun SearchTabContent(
                 item {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
-                            text = "POPULAR SEARCHES",
+                            text = "POPULAR DESTINATIONS (TAP TO SHUFFLE)",
                             color = Color(0xFF6E7D91),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
@@ -1054,19 +1178,25 @@ private fun SearchTabContent(
                                         .clip(RoundedCornerShape(14.dp))
                                         .clickable {
                                             searchText = tag
-                                            onSearch(tag)
+                                            onShuffleQuery(tag)
                                         },
                                     shape = RoundedCornerShape(14.dp),
                                     colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
                                     border = BorderStroke(1.dp, Color(0xFF222B38))
                                 ) {
-                                    Text(
-                                        text = tag,
-                                        color = Color.White,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
-                                    )
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("🎲", fontSize = 11.sp)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = tag,
+                                            color = Color.White,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    }
                                 }
                             }
                         }
