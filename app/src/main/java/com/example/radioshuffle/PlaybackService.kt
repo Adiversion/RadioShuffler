@@ -2,11 +2,14 @@ package com.example.radioshuffle
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.media.AudioManager
+import android.media.ToneGenerator
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -17,45 +20,21 @@ import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
-import java.security.SecureRandom
-import java.util.concurrent.TimeUnit
 
 class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var validPlaces: List<PlaceRecord> = emptyList()
-    private val secureRandom = SecureRandom()
-    private val recentlyPlayedIds = ArrayDeque<String>(30)
-
-    private val api: RadioGardenService by lazy {
-        val client = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .addInterceptor { chain ->
-                val request = chain.request().newBuilder()
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                    .header("Accept", "application/json")
-                    .header("Referer", "https://radio.garden/")
-                    .header("Origin", "https://radio.garden")
-                    .build()
-                chain.proceed(request)
-            }
-            .build()
-
-        Retrofit.Builder()
-            .baseUrl("https://radio.garden/api/")
-            .client(client)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-            .create(RadioGardenService::class.java)
-    }
+    private val repository = RadioGardenRepository()
+    private var shuffleJob: Job? = null
+    private var stationHealthJob: Job? = null
+    private var consecutiveAutoSkips = 0
+    private var pendingShuffleCue = false
 
     override fun onCreate() {
         super.onCreate()
@@ -66,8 +45,8 @@ class PlaybackService : MediaSessionService() {
             .setUserAgent(userAgent)
             .setAllowCrossProtocolRedirects(true)
             .setDefaultRequestProperties(mapOf("Icy-MetaData" to "1"))
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(15_000)
+            .setConnectTimeoutMs(8_000)
+            .setReadTimeoutMs(10_000)
 
         val dataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
@@ -82,6 +61,31 @@ class PlaybackService : MediaSessionService() {
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .build()
+
+        basePlayer.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (mediaItem != null) {
+                    scheduleStationHealthCheck(basePlayer)
+                }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                when (playbackState) {
+                    Player.STATE_READY -> {
+                        consecutiveAutoSkips = 0
+                        if (pendingShuffleCue) {
+                            pendingShuffleCue = false
+                            playShuffleCompleteCue()
+                        }
+                    }
+                    Player.STATE_ENDED -> shuffleBackground(basePlayer, playCue = false)
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                shuffleBackground(basePlayer, playCue = false)
+            }
+        })
 
         val forwardingPlayer = object : ForwardingPlayer(basePlayer) {
             override fun getAvailableCommands(): Player.Commands {
@@ -104,19 +108,19 @@ class PlaybackService : MediaSessionService() {
             }
 
             override fun seekToNext() {
-                shuffleBackground(this)
+                shuffleBackground(this, playCue = true)
             }
 
             override fun seekToNextMediaItem() {
-                shuffleBackground(this)
+                shuffleBackground(this, playCue = true)
             }
 
             override fun seekToPrevious() {
-                shuffleBackground(this)
+                shuffleBackground(this, playCue = true)
             }
 
             override fun seekToPreviousMediaItem() {
-                shuffleBackground(this)
+                shuffleBackground(this, playCue = true)
             }
         }
 
@@ -137,7 +141,7 @@ class PlaybackService : MediaSessionService() {
                     playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS ||
                     playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
                 ) {
-                    shuffleBackground(session.player)
+                    shuffleBackground(session.player, playCue = true)
                     return SessionResult.RESULT_INFO_SKIPPED
                 }
                 return super.onPlayerCommandRequest(session, controllerInfo, playerCommand)
@@ -150,71 +154,77 @@ class PlaybackService : MediaSessionService() {
             .build()
     }
 
-    private fun shuffleBackground(player: Player) {
-        serviceScope.launch {
+    private fun shuffleBackground(player: Player, playCue: Boolean) {
+        shuffleJob?.cancel()
+        shuffleJob = serviceScope.launch {
             try {
-                if (validPlaces.isEmpty()) {
-                    val envelope = withContext(Dispatchers.IO) { api.fetchPlaces() }
-                    validPlaces = envelope.data?.list?.filter { (it.size ?: 0) > 0 }?.shuffled(secureRandom) ?: emptyList()
-                }
-                if (validPlaces.isEmpty()) return@launch
+                val station = withContext(Dispatchers.IO) {
+                    repository.nextStation()
+                } ?: return@launch
 
-                for (attempt in 0..8) {
-                    val randomIndex = secureRandom.nextInt(validPlaces.size)
-                    val place = validPlaces[randomIndex]
+                player.stop()
+                player.clearMediaItems()
+                player.setMediaItem(station.toMediaItem())
+                pendingShuffleCue = pendingShuffleCue || playCue
+                player.prepare()
+                player.play()
 
-                    val page = withContext(Dispatchers.IO) {
-                        try { api.fetchChannelsForPlace(place.id) } catch (e: Exception) { null }
-                    }
-
-                    val stations = page?.data?.content
-                        ?.flatMap { it.items ?: emptyList() }
-                        ?.mapNotNull { it.page }
-                        ?.filter { !it.url.isNullOrBlank() }
-                        ?.shuffled(secureRandom)
-                        ?: emptyList()
-
-                    val candidate = stations.firstOrNull { station ->
-                        val id = station.url!!.trimEnd('/').substringAfterLast('/')
-                        !recentlyPlayedIds.contains(id)
-                    } ?: stations.firstOrNull()
-
-                    if (candidate != null) {
-                        val channelId = candidate.url!!.trimEnd('/').substringAfterLast('/')
-                        val title = candidate.title ?: "Radio Station"
-                        val location = "${candidate.place?.title ?: place.title}, ${candidate.country?.title ?: place.country}"
-                        val streamUrl = "https://radio.garden/api/ara/content/listen/$channelId/channel.mp3"
-
-                        if (recentlyPlayedIds.size >= 30) {
-                            recentlyPlayedIds.removeFirst()
-                        }
-                        recentlyPlayedIds.addLast(channelId)
-
-                        val mediaItem = MediaItem.Builder()
-                            .setUri(streamUrl)
-                            .setMediaMetadata(
-                                MediaMetadata.Builder()
-                                    .setTitle(title)
-                                    .setArtist(location)
-                                    .build()
-                            )
-                            .build()
-
-                        player.stop()
-                        player.clearMediaItems()
-                        player.setMediaItem(mediaItem)
-                        player.prepare()
-                        player.play()
-                        break
-                    }
-                }
-            } catch (_: Exception) {}
+                scheduleStationHealthCheck(player)
+            } catch (_: Exception) {
+                // MediaSession controllers should not crash the playback service.
+            }
         }
+    }
+
+    private fun scheduleStationHealthCheck(player: Player) {
+        stationHealthJob?.cancel()
+        stationHealthJob = serviceScope.launch {
+            delay(STATION_START_GRACE_MS)
+
+            val stationStillUnhealthy = player.currentMediaItem != null &&
+                (player.playbackState == Player.STATE_BUFFERING ||
+                    player.playbackState == Player.STATE_IDLE ||
+                    !player.isPlaying)
+
+            if (stationStillUnhealthy && consecutiveAutoSkips < MAX_AUTO_SKIPS) {
+                consecutiveAutoSkips += 1
+                shuffleBackground(player, playCue = false)
+            } else if (!stationStillUnhealthy) {
+                consecutiveAutoSkips = 0
+            }
+        }
+    }
+
+    private fun playShuffleCompleteCue() {
+        try {
+            val tone = ToneGenerator(AudioManager.STREAM_MUSIC, 45)
+            tone.startTone(ToneGenerator.TONE_PROP_ACK, 140)
+            serviceScope.launch {
+                delay(250)
+                tone.release()
+            }
+        } catch (_: RuntimeException) {
+            // Some devices reject ToneGenerator while audio focus is changing.
+        }
+    }
+
+    private fun ResolvedStation.toMediaItem(): MediaItem {
+        return MediaItem.Builder()
+            .setUri(streamUrl)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(title)
+                    .setArtist(location)
+                    .build()
+            )
+            .build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onDestroy() {
+        shuffleJob?.cancel()
+        stationHealthJob?.cancel()
         serviceScope.cancel()
         mediaSession?.run {
             player.release()
@@ -222,5 +232,10 @@ class PlaybackService : MediaSessionService() {
             mediaSession = null
         }
         super.onDestroy()
+    }
+
+    private companion object {
+        const val STATION_START_GRACE_MS = 18_000L
+        const val MAX_AUTO_SKIPS = 3
     }
 }

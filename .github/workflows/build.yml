@@ -4,9 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       version_tag:
-        description: 'Version tag (e.g. v1.0.8)'
+        description: 'Optional manual version tag, e.g. v1.1.0. Leave empty for automatic version.'
+        required: false
+        default: ''
+      version_bump:
+        description: 'Automatic bump type used when version_tag is empty'
         required: true
-        default: 'v1.0.8'
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 jobs:
   build:
@@ -17,6 +26,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -26,29 +37,120 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
 
-      - name: Build Debug APK with Dynamic Version
+      - name: Validate signing secrets
+        env:
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          KEYSTORE_ENCRYPTION_PASSWORD: ${{ secrets.KEYSTORE_ENCRYPTION_PASSWORD }}
         run: |
-          RAW_VER="${{ github.event.inputs.version_tag }}"
-          CLEAN_VER="${RAW_VER#v}"
-          echo "Building version: $CLEAN_VER"
+          test -n "$RELEASE_STORE_PASSWORD"
+          test -n "$RELEASE_KEY_PASSWORD"
+          test -n "$KEYSTORE_ENCRYPTION_PASSWORD"
+          test -f keystore/radioshuffler-release.keystore.enc
 
-          gradle assembleDebug --no-daemon \
-            -PcustomVersionName="$CLEAN_VER" \
-            -PcustomVersionCode="${{ github.run_number }}"
+      - name: Decrypt release keystore
+        env:
+          KEYSTORE_ENCRYPTION_PASSWORD: ${{ secrets.KEYSTORE_ENCRYPTION_PASSWORD }}
+        run: |
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
+            -in keystore/radioshuffler-release.keystore.enc \
+            -out "$RUNNER_TEMP/radioshuffler-release.keystore" \
+            -pass env:KEYSTORE_ENCRYPTION_PASSWORD
+
+      - name: Resolve version
+        id: version
+        env:
+          MANUAL_VERSION_TAG: ${{ github.event.inputs.version_tag }}
+          VERSION_BUMP: ${{ github.event.inputs.version_bump }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          import re
+          import subprocess
+
+          manual = os.environ.get("MANUAL_VERSION_TAG", "").strip()
+          bump = os.environ.get("VERSION_BUMP", "patch").strip()
+
+          def normalize(tag):
+              tag = tag.strip()
+              if not tag:
+                  return ""
+              normalized = tag if tag.startswith("v") else f"v{tag}"
+              if not re.fullmatch(r"v\d+\.\d+\.\d+", normalized):
+                  raise SystemExit("Manual version_tag must look like v1.2.3 or 1.2.3")
+              return normalized
+
+          if manual:
+              version_tag = normalize(manual)
+          else:
+              subprocess.run(["git", "fetch", "--tags", "--force"], check=False)
+              tags = subprocess.check_output(
+                  ["git", "tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"],
+                  text=True,
+              ).splitlines()
+
+              parsed = []
+              for tag in tags:
+                  match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag.strip())
+                  if match:
+                      parsed.append(tuple(map(int, match.groups())))
+
+              major, minor, patch = max(parsed) if parsed else (1, 0, 0)
+
+              if bump == "major":
+                  major, minor, patch = major + 1, 0, 0
+              elif bump == "minor":
+                  minor, patch = minor + 1, 0
+              else:
+                  patch += 1
+
+              version_tag = f"v{major}.{minor}.{patch}"
+
+          version_name = version_tag[1:] if version_tag.startswith("v") else version_tag
+          print(f"version_tag={version_tag}")
+          print(f"version_name={version_name}")
+          PY
+
+      - name: Show resolved version
+        run: echo "Resolved version: ${{ steps.version.outputs.version_tag }}"
+
+      - name: Build Release APK with Dynamic Version
+        env:
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          echo "Building version: ${{ steps.version.outputs.version_name }}"
+
+          gradle assembleRelease --no-daemon \
+            -PcustomVersionName="${{ steps.version.outputs.version_name }}" \
+            -PcustomVersionCode="${{ github.run_number }}" \
+            -PRELEASE_STORE_FILE="$RUNNER_TEMP/radioshuffler-release.keystore" \
+            -PRELEASE_STORE_PASSWORD="$RELEASE_STORE_PASSWORD" \
+            -PRELEASE_KEY_ALIAS="radioshuffler" \
+            -PRELEASE_KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
 
       - name: Rename APK for Release
         run: |
           mkdir -p release_output
-          cp app/build/outputs/apk/debug/*.apk release_output/RadioShuffler.apk
+          cp app/build/outputs/apk/release/*.apk release_output/RadioShuffler.apk
+
+      - name: Report APK size
+        run: ls -lh release_output/RadioShuffler.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.version_tag }}
-          name: Radio Shuffler ${{ github.event.inputs.version_tag }}
+          tag_name: ${{ steps.version.outputs.version_tag }}
+          name: Radio Shuffler ${{ steps.version.outputs.version_tag }}
           draft: false
           prerelease: false
+          body: |
+            versionName=${{ steps.version.outputs.version_name }}
+            versionCode=${{ github.run_number }}
+            This APK is signed for in-app updates. Future releases must use the same signing key.
           files: release_output/RadioShuffler.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
