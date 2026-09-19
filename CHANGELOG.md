@@ -27,8 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Favorite Desynchronization**: Bound `channelId` directly into `MediaItem.mediaId` and `MediaMetadata.description`. In `onMediaItemTransition`, the active station is synchronized with `currentStation` and `isCurrentFavorite`, ensuring the heart button always favorites the exact stream playing.
 - **Lock Screen Media Controls**: Upgraded notification channel to `IMPORTANCE_DEFAULT` with `VISIBILITY_PUBLIC` on channel `radioshuffler_playback_channel_v2` to prevent Xiaomi / HyperOS / MIUI from suppressing lock screen widgets.
 - **ResolvedStation Constructor**: Removed invalid `streamUrl` constructor parameter to ensure clean Kotlin compilation.
+- **Double Status Bar Top Padding**: Removed redundant `statusBarsPadding()` from the Radio, Search, and Library tabs because `Scaffold` already consumed the status bar inset, eliminating the oversized blank space at the top of every screen.
+- **Outlined Heart Vector Sizing**: Replaced the thin unicode `"♡"` glyph with a standard Material 2dp-stroke `ic_favorite_border` vector drawable, giving the unfavorited heart a bold, normal size consistent with Material 3.
 
 ### ⚡ Optimized
+- **Native Vector Icons Overhaul**: Replaced all unicode characters and emojis across the app (navigation tabs, shuffle actions, search browse buttons, settings hamburger menu, and player controls) with 17 standalone Google Material XML vector drawables.
 - **Virtualized List Rendering**: Converted unbounded vertical scrolling into Jetpack Compose `LazyColumn`, recycling station cards and ensuring smooth 60 FPS performance.
 - **Tuner Card Geometry**: Reduced Tuner Card container height from 290dp to a balanced 200dp, tightening padding and eliminating excessive empty void.
 - **Favorite Heart Touch Target**: Enlarged the favorite button to 44dp (WCAG AA compliant) with a bold 26sp `#FF2D55` active crimson indicator.

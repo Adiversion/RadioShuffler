@@ -49,6 +49,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
@@ -72,6 +73,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -100,10 +102,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class NavTab(val title: String, val icon: String) {
-    RADIO("Radio", "📻"),
-    SEARCH("Search", "🔍"),
-    LIBRARY("Library", "📚")
+enum class NavTab(val title: String, val iconRes: Int) {
+    RADIO("Radio", R.drawable.ic_radio),
+    SEARCH("Search", R.drawable.ic_search),
+    LIBRARY("Library", R.drawable.ic_library)
 }
 
 enum class LibraryTab {
@@ -726,8 +728,7 @@ private fun RadioTabContent(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .statusBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 14.dp),
+            .padding(horizontal = 20.dp, vertical = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
@@ -737,7 +738,7 @@ private fun RadioTabContent(
             horizontalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 4.dp, bottom = 4.dp)
+                .padding(top = 2.dp, bottom = 4.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
@@ -760,11 +761,11 @@ private fun RadioTabContent(
                 onClick = onOpenSettings,
                 modifier = Modifier.size(40.dp)
             ) {
-                Text(
-                    text = "☰",
-                    color = Color.White,
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_menu),
+                    contentDescription = "Settings",
+                    tint = Color.White,
+                    modifier = Modifier.size(24.dp)
                 )
             }
         }
@@ -781,7 +782,12 @@ private fun RadioTabContent(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("📍", fontSize = 13.sp)
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_location),
+                        contentDescription = "Location",
+                        tint = Color(0xFF00E676),
+                        modifier = Modifier.size(15.dp)
+                    )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "Shuffling: “$activeQuery”",
@@ -790,16 +796,27 @@ private fun RadioTabContent(
                         fontWeight = FontWeight.Bold
                     )
                 }
-                Text(
-                    text = "Worldwide ✕",
-                    color = Color(0xFF8E9BAE),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .clickable(onClick = onShuffleWorldwide)
                         .padding(horizontal = 6.dp, vertical = 2.dp)
-                )
+                ) {
+                    Text(
+                        text = "Worldwide",
+                        color = Color(0xFF8E9BAE),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_close),
+                        contentDescription = "Clear filter",
+                        tint = Color(0xFF8E9BAE),
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
             }
         }
 
@@ -845,11 +862,23 @@ private fun RadioTabContent(
                     contentColor = Color(0xFF0A120D)
                 )
             ) {
-                Text(
-                    text = if (activeQuery != null) "🎲 Shuffle “$activeQuery” Radio" else "🎲 Shuffle Worldwide Radio",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_shuffle),
+                        contentDescription = "Shuffle",
+                        tint = Color(0xFF0A120D),
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (activeQuery != null) "Shuffle “$activeQuery” Radio" else "Shuffle Worldwide Radio",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
 
             if (activeQuery != null) {
@@ -923,8 +952,7 @@ private fun SearchTabContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 14.dp)
+            .padding(horizontal = 20.dp, vertical = 10.dp)
     ) {
         Text(
             text = "SEARCH WORLDWIDE",
@@ -941,6 +969,14 @@ private fun SearchTabContent(
             onValueChange = { searchText = it },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
+            leadingIcon = {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_search),
+                    contentDescription = null,
+                    tint = Color(0xFF8E9BAE),
+                    modifier = Modifier.size(20.dp)
+                )
+            },
             label = { Text("Station, city, country, or genre") },
             placeholder = { Text("e.g. India, KIIS FM, Tokyo, jazz, BBC") },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -956,7 +992,12 @@ private fun SearchTabContent(
                         searchText = ""
                         onClearSearch()
                     }) {
-                        Text("✕", color = Color(0xFF8E9BAE), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_close),
+                            contentDescription = "Clear search",
+                            tint = Color(0xFF8E9BAE),
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
             },
@@ -994,13 +1035,25 @@ private fun SearchTabContent(
                     contentColor = Color(0xFF0A120D)
                 )
             ) {
-                Text(
-                    text = if (searchText.isNotBlank()) "🎲 Shuffle “$searchText”" else "🎲 Shuffle",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_shuffle),
+                        contentDescription = null,
+                        tint = Color(0xFF0A120D),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (searchText.isNotBlank()) "Shuffle “$searchText”" else "Shuffle",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
             OutlinedButton(
@@ -1015,7 +1068,19 @@ private fun SearchTabContent(
                 shape = RoundedCornerShape(24.dp),
                 border = BorderStroke(1.dp, Color(0xFF2F3C4E))
             ) {
-                Text("🔍 Browse List", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_search),
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Browse List", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                }
             }
         }
 
@@ -1075,7 +1140,12 @@ private fun SearchTabContent(
                             onClick = onClearSearch,
                             modifier = Modifier.size(24.dp)
                         ) {
-                            Text("✕", color = Color(0xFF6E7D91), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_close),
+                                contentDescription = "Clear",
+                                tint = Color(0xFF6E7D91),
+                                modifier = Modifier.size(14.dp)
+                            )
                         }
                     }
                 }
@@ -1103,7 +1173,12 @@ private fun SearchTabContent(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.weight(1f)
                                 ) {
-                                    Text("🎲", fontSize = 18.sp)
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.ic_shuffle),
+                                        contentDescription = null,
+                                        tint = Color(0xFF00E676),
+                                        modifier = Modifier.size(20.dp)
+                                    )
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Column {
                                         Text(
@@ -1119,7 +1194,16 @@ private fun SearchTabContent(
                                         )
                                     }
                                 }
-                                Text("▶ Play", color = Color(0xFF00E676), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.ic_play),
+                                        contentDescription = null,
+                                        tint = Color(0xFF00E676),
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Play", color = Color(0xFF00E676), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }
@@ -1187,7 +1271,12 @@ private fun SearchTabContent(
                                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text("🎲", fontSize = 11.sp)
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.ic_shuffle),
+                                            contentDescription = null,
+                                            tint = Color(0xFF00E676),
+                                            modifier = Modifier.size(12.dp)
+                                        )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
                                             text = tag,
@@ -1225,8 +1314,7 @@ private fun LibraryTabContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 14.dp)
+            .padding(horizontal = 20.dp, vertical = 10.dp)
     ) {
         Text(
             text = "YOUR LIBRARY",
@@ -1255,11 +1343,23 @@ private fun LibraryTabContent(
                     contentColor = if (selectedTab == LibraryTab.FAVORITES) Color(0xFF0A120D) else Color(0xFF8E9BAE)
                 )
             ) {
-                Text(
-                    text = "★ Favorites (${favorites.size})",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_star),
+                        contentDescription = null,
+                        tint = if (selectedTab == LibraryTab.FAVORITES) Color(0xFF0A120D) else Color(0xFF8E9BAE),
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Favorites (${favorites.size})",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
 
             Button(
@@ -1271,11 +1371,23 @@ private fun LibraryTabContent(
                     contentColor = if (selectedTab == LibraryTab.RECENTS) Color(0xFF0A120D) else Color(0xFF8E9BAE)
                 )
             ) {
-                Text(
-                    text = "🕒 Recents (${displayRecents.size}/20)",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_history),
+                        contentDescription = null,
+                        tint = if (selectedTab == LibraryTab.RECENTS) Color(0xFF0A120D) else Color(0xFF8E9BAE),
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Recents (${displayRecents.size}/20)",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
 
@@ -1296,7 +1408,7 @@ private fun LibraryTabContent(
                             border = BorderStroke(1.dp, Color(0xFF222B38))
                         ) {
                             Text(
-                                text = "No favorites yet. Tap the ♡ heart icon while listening to save stations here!",
+                                text = "No favorites yet. Tap the heart icon while listening to save stations here!",
                                 color = Color(0xFF6E7D91),
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center,
@@ -1389,10 +1501,11 @@ private fun StationItemRow(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.weight(1f)
             ) {
-                Text(
-                    text = if (isCurrent) "▶" else "📻",
-                    fontSize = 14.sp,
-                    color = if (isCurrent) Color(0xFF00E676) else Color.White
+                Icon(
+                    painter = painterResource(id = if (isCurrent) R.drawable.ic_play else R.drawable.ic_radio),
+                    contentDescription = null,
+                    tint = if (isCurrent) Color(0xFF00E676) else Color(0xFF8E9BAE),
+                    modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
@@ -1418,10 +1531,11 @@ private fun StationItemRow(
                 onClick = onToggleFavorite,
                 modifier = Modifier.size(36.dp)
             ) {
-                Text(
-                    text = if (isFav) "♥" else "♡",
-                    color = if (isFav) Color(0xFFFF2D55) else Color(0xFF6E7D91),
-                    fontSize = 18.sp
+                Icon(
+                    painter = painterResource(id = if (isFav) R.drawable.ic_favorite_filled else R.drawable.ic_favorite_border),
+                    contentDescription = if (isFav) "Favorited" else "Add to favorites",
+                    tint = if (isFav) Color(0xFFFF2D55) else Color(0xFF8E9BAE),
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }
@@ -1500,11 +1614,11 @@ private fun MiniPlayerBar(
                     onClick = onToggleFavorite,
                     modifier = Modifier.size(36.dp)
                 ) {
-                    Text(
-                        text = if (isFavorite) "♥" else "♡",
-                        color = if (isFavorite) Color(0xFFFF2D55) else Color(0xFF8E9BAE),
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
+                    Icon(
+                        painter = painterResource(id = if (isFavorite) R.drawable.ic_favorite_filled else R.drawable.ic_favorite_border),
+                        contentDescription = if (isFavorite) "Favorited" else "Add to favorites",
+                        tint = if (isFavorite) Color(0xFFFF2D55) else Color(0xFF8E9BAE),
+                        modifier = Modifier.size(20.dp)
                     )
                 }
 
@@ -1519,11 +1633,11 @@ private fun MiniPlayerBar(
                             color = Color(0xFF00E676)
                         )
                     } else {
-                        Text(
-                            text = if (isPlaying) "❚❚" else "▶",
-                            color = Color(0xFF00E676),
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
+                        Icon(
+                            painter = painterResource(id = if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play),
+                            contentDescription = if (isPlaying) "Pause" else "Play",
+                            tint = Color(0xFF00E676),
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
@@ -1560,11 +1674,13 @@ private fun BottomNavBar(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                Text(
-                    text = tab.icon,
-                    fontSize = 18.sp
+                Icon(
+                    painter = painterResource(id = tab.iconRes),
+                    contentDescription = tab.title,
+                    tint = if (selected) Color(0xFF00E676) else Color(0xFF8E9BAE),
+                    modifier = Modifier.size(22.dp)
                 )
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(3.dp))
                 Text(
                     text = tab.title,
                     color = if (selected) Color(0xFF00E676) else Color(0xFF8E9BAE),
@@ -1614,7 +1730,12 @@ private fun SettingsBottomSheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("⚙", fontSize = 18.sp)
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_settings),
+                        contentDescription = null,
+                        tint = Color(0xFF00E676),
+                        modifier = Modifier.size(20.dp)
+                    )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "Settings & Controls",
@@ -1628,7 +1749,12 @@ private fun SettingsBottomSheet(
                     onClick = onDismiss,
                     modifier = Modifier.size(32.dp)
                 ) {
-                    Text("✕", color = Color(0xFF8E9BAE), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_close),
+                        contentDescription = "Close",
+                        tint = Color(0xFF8E9BAE),
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
 
@@ -1642,12 +1768,21 @@ private fun SettingsBottomSheet(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "⏱ Sleep Timer",
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_timer),
+                            contentDescription = null,
+                            tint = Color(0xFF00E676),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Sleep Timer",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                     Text(
                         text = if (sleepTimerMinutes == null) "Off" else "$sleepTimerMinutes min",
                         color = if (sleepTimerMinutes == null) Color(0xFF8E9BAE) else Color(0xFF00E676),
@@ -1672,12 +1807,21 @@ private fun SettingsBottomSheet(
 
             // 2. Lock Screen & Notification Controls
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "🔔 Lock Screen Player",
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_notifications),
+                        contentDescription = null,
+                        tint = Color(0xFF00E676),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Lock Screen Player",
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -1729,12 +1873,21 @@ private fun SettingsBottomSheet(
 
             // 3. GitHub App Updates
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "🔄 App Updates",
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_update),
+                        contentDescription = null,
+                        tint = Color(0xFF00E676),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "App Updates",
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
 
                 UpdateControls(
                     updateState = updateState,
@@ -1784,7 +1937,12 @@ private fun RadioStatus(
                             .background(Color(0xFF1B222E)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("📻", fontSize = 26.sp)
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_radio),
+                            contentDescription = null,
+                            tint = Color(0xFF00E676),
+                            modifier = Modifier.size(28.dp)
+                        )
                     }
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
@@ -1795,7 +1953,7 @@ private fun RadioStatus(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Tap 🎲 Shuffle to stream from random stations worldwide.",
+                        text = "Tap Shuffle to stream from random stations worldwide.",
                         color = Color(0xFF7E8B9B),
                         fontSize = 12.sp,
                         textAlign = TextAlign.Center
@@ -1857,11 +2015,11 @@ private fun RadioStatus(
                             onClick = onToggleFavorite,
                             modifier = Modifier.size(44.dp)
                         ) {
-                            Text(
-                                text = if (isFavorite) "♥" else "♡",
-                                color = if (isFavorite) Color(0xFFFF2D55) else Color(0xFF8E9BAE),
-                                fontSize = 26.sp,
-                                fontWeight = FontWeight.Bold
+                            Icon(
+                                painter = painterResource(id = if (isFavorite) R.drawable.ic_favorite_filled else R.drawable.ic_favorite_border),
+                                contentDescription = if (isFavorite) "Favorited" else "Add to favorites",
+                                tint = if (isFavorite) Color(0xFFFF2D55) else Color(0xFF8E9BAE),
+                                modifier = Modifier.size(26.dp)
                             )
                         }
                     }
@@ -1878,17 +2036,29 @@ private fun RadioStatus(
                         overflow = TextOverflow.Ellipsis
                     )
 
-                    Spacer(modifier = Modifier.height(3.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
 
-                    Text(
-                        text = "📍 ${current.city}, ${current.country}",
-                        color = Color(0xFF00E676),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_location),
+                            contentDescription = null,
+                            tint = Color(0xFF00E676),
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "${current.city}, ${current.country}",
+                            color = Color(0xFF00E676),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
 
                     if (!current.currentTrack.isNullOrBlank()) {
                         Spacer(modifier = Modifier.height(8.dp))
@@ -1903,7 +2073,12 @@ private fun RadioStatus(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("🎵", fontSize = 12.sp)
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_music_note),
+                                    contentDescription = null,
+                                    tint = Color(0xFF00E676),
+                                    modifier = Modifier.size(14.dp)
+                                )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = current.currentTrack,
@@ -1937,11 +2112,11 @@ private fun RadioStatus(
                                     .background(playButtonBrush)
                                     .border(1.5.dp, Color(0xFF2F3C4E), CircleShape)
                             ) {
-                                Text(
-                                    text = if (current.isPlaying) "❚❚" else "▶",
-                                    color = Color.White,
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.Bold
+                                Icon(
+                                    painter = painterResource(id = if (current.isPlaying) R.drawable.ic_pause else R.drawable.ic_play),
+                                    contentDescription = if (current.isPlaying) "Pause" else "Play",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(22.dp)
                                 )
                             }
                         }
@@ -1956,7 +2131,12 @@ private fun RadioStatus(
                             .background(Color(0x26FF5252)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("⚠", fontSize = 22.sp)
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_warning),
+                            contentDescription = null,
+                            tint = Color(0xFFFF5252),
+                            modifier = Modifier.size(24.dp)
+                        )
                     }
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
