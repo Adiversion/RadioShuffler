@@ -1,13 +1,19 @@
-name: Build APK
+name: Build & Release App
 
 on:
-  push:
-    branches: [ "**" ]
   workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Version tag (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -24,8 +30,18 @@ jobs:
       - name: Build Debug APK
         run: gradle assembleDebug --no-daemon
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - name: Rename APK for Release
+        run: |
+          mkdir -p release_output
+          cp app/build/outputs/apk/debug/*.apk release_output/RadioShuffler.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: RadioShuffler-APK
-          path: app/build/outputs/apk/debug/*.apk
+          tag_name: ${{ github.event.inputs.version_tag }}
+          name: Radio Shuffler ${{ github.event.inputs.version_tag }}
+          draft: false
+          prerelease: false
+          files: release_output/RadioShuffler.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
