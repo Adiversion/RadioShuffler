@@ -150,7 +150,7 @@ class RadioViewModel : ViewModel() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                _uiState.value = RadioUiState.Error("Station stream offline. Tap Shuffle to try another!")
+                _uiState.value = RadioUiState.Error("Station offline. Tap Shuffle again!")
             }
         })
     }
@@ -165,7 +165,6 @@ class RadioViewModel : ViewModel() {
         viewModelScope.launch {
             _uiState.value = RadioUiState.Loading
             try {
-                // Step 1: Preload places list (only keep cities with active channels)
                 if (validPlaces.isEmpty()) {
                     val envelope = withContext(Dispatchers.IO) { service.fetchPlaces() }
                     validPlaces = envelope.data?.list?.filter { (it.size ?: 0) > 0 } ?: emptyList()
@@ -180,7 +179,6 @@ class RadioViewModel : ViewModel() {
                 var resolvedTitle: String? = null
                 var chosenPlace: PlaceRecord? = null
 
-                // Step 2: Try random places until we resolve a valid channel ID
                 for (attempt in 0..6) {
                     val randomPlace = validPlaces.random()
                     val page = withContext(Dispatchers.IO) {
@@ -191,22 +189,16 @@ class RadioViewModel : ViewModel() {
                         }
                     }
 
-                    // Extract all items from the response
                     val items = page?.data?.content
                         ?.flatMap { it.items ?: emptyList() }
                         ?: emptyList()
 
-                    // Match stations that have either a pageId or a path with an ID
                     val validStations = items.filter { item ->
-                        val hasPageId = !item.pageId.isNullOrBlank()
-                        val hasHref = !item.href.isNullOrBlank()
-                        hasPageId || hasHref
+                        !item.pageId.isNullOrBlank() || !item.href.isNullOrBlank()
                     }
 
                     if (validStations.isNotEmpty()) {
                         val station = validStations.random()
-                        
-                        // Extract channel ID: prefer pageId directly; fallback to last slug in href
                         val id = if (!station.pageId.isNullOrBlank()) {
                             station.pageId
                         } else {
@@ -227,7 +219,6 @@ class RadioViewModel : ViewModel() {
                     return@launch
                 }
 
-                // Step 3: Stream through Media3
                 val streamUrl = "https://radio.garden/api/ara/content/listen/$resolvedChannelId/channel.mp3"
                 val locationStr = "${chosenPlace.title ?: "Unknown City"}, ${chosenPlace.country ?: ""}"
                 val finalTitle = resolvedTitle ?: "Radio Station"
@@ -264,7 +255,7 @@ class RadioViewModel : ViewModel() {
 }
 
 // -----------------------------------------------------------------------------
-// 4. ACTIVITY & UI
+// 4. MAIN ACTIVITY & UI
 // -----------------------------------------------------------------------------
 class MainActivity : ComponentActivity() {
     private var controllerFuture: ListenableFuture<MediaController>? = null
