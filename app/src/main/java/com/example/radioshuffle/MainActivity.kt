@@ -49,7 +49,7 @@ import retrofit2.http.Path
 import java.util.concurrent.TimeUnit
 
 // -----------------------------------------------------------------------------
-// 1. DATA MODELS MATCHING RADIO GARDEN'S EXACT SCHEMA
+// 1. DATA MODELS
 // -----------------------------------------------------------------------------
 data class PlacesEnvelope(
     @SerializedName("data") val data: PlacesData?
@@ -164,7 +164,7 @@ class RadioViewModel : ViewModel() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                _uiState.value = RadioUiState.Error("Station stream offline. Tap Shuffle again!")
+                _uiState.value = RadioUiState.Error("Station offline. Tap Shuffle again!")
             }
         })
     }
@@ -215,7 +215,7 @@ class RadioViewModel : ViewModel() {
                     if (validStations.isNotEmpty()) {
                         val station = validStations.random()
                         
-                        // Extracts trailing ID (e.g. "/listen/deep3/3krC3V49" -> "3krC3V49")
+                        // Extracts trailing 8-character ID ONLY (e.g. "/listen/deep3/3krC3V49" -> "3krC3V49")
                         val channelId = station.url!!.trimEnd('/').substringAfterLast('/')
 
                         if (channelId.isNotBlank()) {
@@ -235,7 +235,7 @@ class RadioViewModel : ViewModel() {
                     return@launch
                 }
 
-                // Step 3: Stream through Media3 ExoPlayer
+                // Step 3: Stream through Media3 ExoPlayer using verified listen path
                 val streamUrl = "https://radio.garden/api/ara/content/listen/$resolvedChannelId/channel.mp3"
                 val finalTitle = resolvedTitle ?: "Radio Station"
 
