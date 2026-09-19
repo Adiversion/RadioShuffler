@@ -12,16 +12,20 @@ android {
         applicationId = "com.example.radioshuffle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
-        
-        // Strip unused language localizations (keep English only)
+
+        // Read dynamic version passed from GitHub Actions, or fallback to defaults
+        val appVersionName = project.findProperty("customVersionName") as? String ?: "1.0.0"
+        val appVersionCode = (project.findProperty("customVersionCode") as? String)?.toIntOrNull() ?: 1
+
+        versionCode = appVersionCode
+        versionName = appVersionName
+
+        // Strip non-English localizations to reduce size
         resourceConfigurations += listOf("en")
     }
 
     buildTypes {
         debug {
-            // Minify and remove unused code from Compose/ExoPlayer
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -54,7 +58,6 @@ android {
 
     packaging {
         resources {
-            // Exclude redundant license and meta files
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/*.version"
         }
@@ -68,12 +71,14 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.09.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5")
 
-    // AndroidX Media3 (Streaming Audio & Session)
+    // Media3 (Playback and Background MediaSession)
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-session:1.4.1")
+    implementation("androidx.media3:media3-common:1.4.1")
 
     // Networking
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
