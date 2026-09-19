@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -23,12 +24,15 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
 
 class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var validPlaces: List<PlaceRecord> = emptyList()
+    private val secureRandom = SecureRandom()
+    private val recentlyPlayedIds = ArrayDeque<String>(30)
 
     private val api: RadioGardenService by lazy {
         val client = OkHttpClient.Builder()
@@ -73,11 +77,48 @@ class PlaybackService : MediaSessionService() {
             .setUsage(C.USAGE_MEDIA)
             .build()
 
-        val player = ExoPlayer.Builder(this)
+        val basePlayer = ExoPlayer.Builder(this)
             .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .build()
+
+        val forwardingPlayer = object : ForwardingPlayer(basePlayer) {
+            override fun getAvailableCommands(): Player.Commands {
+                return super.getAvailableCommands().buildUpon()
+                    .add(COMMAND_SEEK_TO_NEXT)
+                    .add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                    .add(COMMAND_SEEK_TO_PREVIOUS)
+                    .add(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                    .build()
+            }
+
+            override fun isCommandAvailable(command: Int): Boolean {
+                return when (command) {
+                    COMMAND_SEEK_TO_NEXT,
+                    COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                    COMMAND_SEEK_TO_PREVIOUS,
+                    COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> true
+                    else -> super.isCommandAvailable(command)
+                }
+            }
+
+            override fun seekToNext() {
+                shuffleBackground(this)
+            }
+
+            override fun seekToNextMediaItem() {
+                shuffleBackground(this)
+            }
+
+            override fun seekToPrevious() {
+                shuffleBackground(this)
+            }
+
+            override fun seekToPreviousMediaItem() {
+                shuffleBackground(this)
+            }
+        }
 
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
@@ -91,21 +132,19 @@ class PlaybackService : MediaSessionService() {
                 controllerInfo: MediaSession.ControllerInfo,
                 playerCommand: Int
             ): Int {
-                // Intercept Bluetooth / Headset / Notification Next & Previous buttons
                 if (playerCommand == Player.COMMAND_SEEK_TO_NEXT ||
                     playerCommand == Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM ||
                     playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS ||
                     playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
                 ) {
                     shuffleBackground(session.player)
-                    // Return SessionResult.RESULT_INFO_SKIPPED to tell ExoPlayer we handled the custom action
                     return SessionResult.RESULT_INFO_SKIPPED
                 }
                 return super.onPlayerCommandRequest(session, controllerInfo, playerCommand)
             }
         }
 
-        mediaSession = MediaSession.Builder(this, player)
+        mediaSession = MediaSession.Builder(this, forwardingPlayer)
             .setSessionActivity(pendingIntent)
             .setCallback(callback)
             .build()
@@ -116,12 +155,14 @@ class PlaybackService : MediaSessionService() {
             try {
                 if (validPlaces.isEmpty()) {
                     val envelope = withContext(Dispatchers.IO) { api.fetchPlaces() }
-                    validPlaces = envelope.data?.list?.filter { (it.size ?: 0) > 0 } ?: emptyList()
+                    validPlaces = envelope.data?.list?.filter { (it.size ?: 0) > 0 }?.shuffled(secureRandom) ?: emptyList()
                 }
                 if (validPlaces.isEmpty()) return@launch
 
-                for (attempt in 0..4) {
-                    val place = validPlaces.random()
+                for (attempt in 0..8) {
+                    val randomIndex = secureRandom.nextInt(validPlaces.size)
+                    val place = validPlaces[randomIndex]
+
                     val page = withContext(Dispatchers.IO) {
                         try { api.fetchChannelsForPlace(place.id) } catch (e: Exception) { null }
                     }
@@ -130,14 +171,24 @@ class PlaybackService : MediaSessionService() {
                         ?.flatMap { it.items ?: emptyList() }
                         ?.mapNotNull { it.page }
                         ?.filter { !it.url.isNullOrBlank() }
+                        ?.shuffled(secureRandom)
                         ?: emptyList()
 
-                    if (stations.isNotEmpty()) {
-                        val station = stations.random()
-                        val channelId = station.url!!.trimEnd('/').substringAfterLast('/')
-                        val title = station.title ?: "Radio Station"
-                        val location = "${station.place?.title ?: place.title}, ${station.country?.title ?: place.country}"
+                    val candidate = stations.firstOrNull { station ->
+                        val id = station.url!!.trimEnd('/').substringAfterLast('/')
+                        !recentlyPlayedIds.contains(id)
+                    } ?: stations.firstOrNull()
+
+                    if (candidate != null) {
+                        val channelId = candidate.url!!.trimEnd('/').substringAfterLast('/')
+                        val title = candidate.title ?: "Radio Station"
+                        val location = "${candidate.place?.title ?: place.title}, ${candidate.country?.title ?: place.country}"
                         val streamUrl = "https://radio.garden/api/ara/content/listen/$channelId/channel.mp3"
+
+                        if (recentlyPlayedIds.size >= 30) {
+                            recentlyPlayedIds.removeFirst()
+                        }
+                        recentlyPlayedIds.addLast(channelId)
 
                         val mediaItem = MediaItem.Builder()
                             .setUri(streamUrl)
