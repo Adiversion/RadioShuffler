@@ -32,9 +32,14 @@ data class PageDetails(
     @SerializedName("href") val href: String?,
     @SerializedName("title") val title: String?,
     @SerializedName("subtitle") val subtitle: String? = null,
+    @SerializedName("type") val type: String? = null,
     @SerializedName("place") val place: PlaceInfo?,
     @SerializedName("country") val country: CountryInfo?
-)
+) {
+    val isChannel: Boolean
+        get() = type.equals("channel", ignoreCase = true) ||
+            (url ?: href)?.contains("/listen/", ignoreCase = true) == true
+}
 data class PlaceInfo(@SerializedName("title") val title: String?)
 data class CountryInfo(@SerializedName("title") val title: String?)
 
@@ -90,6 +95,9 @@ interface RadioGardenService {
 
     @GET("ara/content/page/{placeId}/channels")
     suspend fun fetchChannelsForPlace(@Path("placeId") placeId: String): ChannelsEnvelope
+
+    @GET("ara/content/page/{pageId}")
+    suspend fun fetchPage(@Path("pageId") pageId: String): ChannelsEnvelope
 
     @GET("search")
     suspend fun search(@Query("q") query: String): SearchEnvelope
@@ -217,8 +225,8 @@ class RadioGardenRepository(
                 return ResolvedStation(
                     channelId = channelId,
                     title = source.title ?: "Radio Station",
-                    city = source.subtitle.cityPart(),
-                    country = source.subtitle.countryPart()
+                    city = source.page?.place?.title ?: source.subtitle.cityPart(),
+                    country = source.page?.country?.title ?: source.subtitle.countryPart()
                 )
             }
         }
@@ -285,14 +293,15 @@ class RadioGardenRepository(
     }
 
     private suspend fun resolveFromPlace(place: PlaceRecord, query: String? = null): ResolvedStation? {
-        val page = runCatching { service.fetchChannelsForPlace(place.id) }
-            .onFailure { Log.w("RadioGarden", "Failed to fetch channels for ${place.id}: ${it.message}") }
-            .getOrNull()
+        val page = runCatching { service.fetchPage(place.id) }.getOrNull()
+            ?: runCatching { service.fetchChannelsForPlace(place.id) }
+                .onFailure { Log.w("RadioGarden", "Failed to fetch channels for ${place.id}: ${it.message}") }
+                .getOrNull()
 
         val stations = page?.data?.content
             ?.flatMap { it.items ?: emptyList() }
             ?.mapNotNull { it.page }
-            ?.filter { !it.channelPath.isNullOrBlank() }
+            ?.filter { it.isChannel && !it.channelPath.isNullOrBlank() }
             ?.shuffled(random)
             .orEmpty()
 
