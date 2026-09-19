@@ -1,9 +1,13 @@
 package com.example.radioshuffle
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.os.Build
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
@@ -15,6 +19,7 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionResult
@@ -38,6 +43,15 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+
+        createNotificationChannel()
+
+        val notificationProvider = DefaultMediaNotificationProvider.Builder(this)
+            .setChannelId(NOTIFICATION_CHANNEL_ID)
+            .setNotificationId(NOTIFICATION_ID)
+            .build()
+        notificationProvider.setSmallIcon(R.drawable.ic_radio_notification)
+        setMediaNotificationProvider(notificationProvider)
 
         serviceScope.launch(Dispatchers.IO) {
             repository.warmUp()
@@ -244,8 +258,26 @@ class PlaybackService : MediaSessionService() {
         super.onDestroy()
     }
 
-    private companion object {
-        const val STATION_START_GRACE_MS = 18_000L
-        const val MAX_AUTO_SKIPS = 3
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                "Radio Stream Playback",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Radio stream playback and lock screen controls"
+                setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(channel)
+        }
+    }
+
+    companion object {
+        const val NOTIFICATION_CHANNEL_ID = "radioshuffler_playback_channel"
+        const val NOTIFICATION_ID = 1001
+        private const val STATION_START_GRACE_MS = 18_000L
+        private const val MAX_AUTO_SKIPS = 3
     }
 }

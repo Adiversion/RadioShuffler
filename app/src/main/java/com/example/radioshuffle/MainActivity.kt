@@ -57,6 +57,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import android.app.Application
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -64,6 +69,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -108,16 +114,27 @@ sealed class UpdateUiState {
     data class Error(val message: String) : UpdateUiState()
 }
 
-class RadioViewModel : ViewModel() {
+class RadioViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = RadioGardenRepository()
+    private val favoritesManager = FavoritesManager(application)
     private var controller: MediaController? = null
     private var shuffleJob: Job? = null
     private var sleepTimerJob: Job? = null
     private var updateJob: Job? = null
     private var lastQuery: String? = null
+    private var currentStation: ResolvedStation? = null
 
     private val _uiState = MutableStateFlow<RadioUiState>(RadioUiState.Idle)
     val uiState: StateFlow<RadioUiState> = _uiState
+
+    private val _favorites = MutableStateFlow<List<ResolvedStation>>(favoritesManager.getFavorites())
+    val favorites: StateFlow<List<ResolvedStation>> = _favorites
+
+    private val _recents = MutableStateFlow<List<ResolvedStation>>(favoritesManager.getRecents())
+    val recents: StateFlow<List<ResolvedStation>> = _recents
+
+    private val _isCurrentFavorite = MutableStateFlow<Boolean>(false)
+    val isCurrentFavorite: StateFlow<Boolean> = _isCurrentFavorite
 
     private val _sleepTimerMinutes = MutableStateFlow<Int?>(null)
     val sleepTimerMinutes: StateFlow<Int?> = _sleepTimerMinutes
@@ -281,12 +298,46 @@ class RadioViewModel : ViewModel() {
         }
     }
 
+    fun toggleFavorite() {
+        val station = currentStation ?: return
+        val newStatus = favoritesManager.toggleFavorite(station)
+        _favorites.value = favoritesManager.getFavorites()
+        _isCurrentFavorite.value = newStatus
+    }
+
+    fun removeFavorite(channelId: String) {
+        favoritesManager.removeFavorite(channelId)
+        _favorites.value = favoritesManager.getFavorites()
+        currentStation?.let {
+            if (it.channelId == channelId) {
+                _isCurrentFavorite.value = false
+            }
+        }
+    }
+
+    fun playSpecificStation(station: ResolvedStation) {
+        shuffleJob?.cancel()
+        shuffleJob = viewModelScope.launch {
+            if (controller == null) {
+                _uiState.value = RadioUiState.Error("Player is still starting. Try again in a moment.")
+                return@launch
+            }
+            _uiState.value = RadioUiState.Loading("Connecting to “${station.title}”...")
+            playStation(station)
+        }
+    }
+
     override fun onCleared() {
         controller?.removeListener(playerListener)
         super.onCleared()
     }
 
     private fun playStation(station: ResolvedStation) {
+        currentStation = station
+        favoritesManager.addRecent(station)
+        _recents.value = favoritesManager.getRecents()
+        _isCurrentFavorite.value = favoritesManager.isFavorite(station.channelId)
+
         val metadata = MediaMetadata.Builder()
             .setTitle(station.title)
             .setArtist(station.location)
@@ -324,6 +375,10 @@ class RadioViewModel : ViewModel() {
         val locationParts = (metadata.artist?.toString() ?: "").split(", ")
         val city = locationParts.getOrNull(0).orEmpty()
         val country = locationParts.getOrNull(1).orEmpty()
+
+        currentStation?.let {
+            _isCurrentFavorite.value = favoritesManager.isFavorite(it.channelId)
+        }
 
         _uiState.value = RadioUiState.Playing(
             title = stationTitle,
@@ -387,6 +442,9 @@ class MainActivity : ComponentActivity() {
 fun ModernRadioScreen(viewModel: RadioViewModel) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val favorites by viewModel.favorites.collectAsStateWithLifecycle()
+    val recents by viewModel.recents.collectAsStateWithLifecycle()
+    val isFavorite by viewModel.isCurrentFavorite.collectAsStateWithLifecycle()
     val sleepTimerMinutes by viewModel.sleepTimerMinutes.collectAsStateWithLifecycle()
     val updateState by viewModel.updateState.collectAsStateWithLifecycle()
     val isLoading = state is RadioUiState.Loading
@@ -422,21 +480,26 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             )
         }
 
+        // Center Tuner Card (stable minHeight prevents jumping/resizing on shuffle)
         Card(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 290.dp),
             shape = RoundedCornerShape(32.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222B38))
         ) {
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(28.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                    .defaultMinSize(minHeight = 290.dp)
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
             ) {
                 RadioStatus(
                     state = state,
+                    isFavorite = isFavorite,
+                    onToggleFavorite = viewModel::toggleFavorite,
                     onTogglePlayPause = viewModel::togglePlayPause
                 )
             }
@@ -446,6 +509,17 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             isLoading = isLoading,
             onSearch = { query -> viewModel.shuffle(query) },
             onShuffle = { viewModel.shuffle() }
+        )
+
+        FavoritesSection(
+            favorites = favorites,
+            onPlayStation = { viewModel.playSpecificStation(it) },
+            onRemoveFavorite = { viewModel.removeFavorite(it.channelId) }
+        )
+
+        RecentStationsSection(
+            recents = recents,
+            onPlayStation = { viewModel.playSpecificStation(it) }
         )
 
         SleepTimerControls(
@@ -552,6 +626,8 @@ private fun SearchSection(
 @Composable
 private fun RadioStatus(
     state: RadioUiState,
+    isFavorite: Boolean,
+    onToggleFavorite: () -> Unit,
     onTogglePlayPause: () -> Unit
 ) {
     val playButtonBrush = remember {
@@ -566,7 +642,9 @@ private fun RadioStatus(
         label = "RadioStatusCrossfade"
     ) { current ->
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 240.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
@@ -615,32 +693,50 @@ private fun RadioStatus(
 
                 is RadioUiState.Playing -> {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .background(
-                                if (current.isBuffering) Color(0x26FFC107) else Color(0x1A00E676),
-                                RoundedCornerShape(20.dp)
-                            )
-                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(if (current.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676))
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = when {
-                                current.isBuffering -> "BUFFERING..."
-                                current.isPlaying -> "LIVE STREAM"
-                                else -> "PAUSED"
-                            },
-                            color = if (current.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
-                        )
+                                .background(
+                                    if (current.isBuffering) Color(0x26FFC107) else Color(0x1A00E676),
+                                    RoundedCornerShape(20.dp)
+                                )
+                                .padding(horizontal = 12.dp, vertical = 4.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(if (current.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676))
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = when {
+                                    current.isBuffering -> "BUFFERING..."
+                                    current.isPlaying -> "LIVE STREAM"
+                                    else -> "PAUSED"
+                                },
+                                color = if (current.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                        }
+
+                        IconButton(
+                            onClick = onToggleFavorite,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Text(
+                                text = if (isFavorite) "♥" else "♡",
+                                color = if (isFavorite) Color(0xFFFF5252) else Color(0xFF8E9BAE),
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(18.dp))
@@ -722,14 +818,204 @@ private fun RadioStatus(
                 }
 
                 is RadioUiState.Error -> {
+                    Box(
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(CircleShape)
+                            .background(Color(0x26FF5252)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("⚠", fontSize = 28.sp)
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = current.message,
                         color = Color(0xFFFF5252),
                         fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
                         textAlign = TextAlign.Center
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun FavoritesSection(
+    favorites: List<ResolvedStation>,
+    onPlayStation: (ResolvedStation) -> Unit,
+    onRemoveFavorite: (ResolvedStation) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "★ FAVORITES",
+                color = Color(0xFFFFD54F),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp
+            )
+            if (favorites.isNotEmpty()) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .background(Color(0x26FFD54F), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "${favorites.size}",
+                        color = Color(0xFFFFD54F),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        if (favorites.isEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222B38))
+            ) {
+                Text(
+                    text = "No favorites yet. Tap the ♡ heart icon while listening to save stations here!",
+                    color = Color(0xFF6E7D91),
+                    fontSize = 13.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(16.dp)
+                )
+            }
+        } else {
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(favorites, key = { it.channelId }) { station ->
+                    StationCard(
+                        station = station,
+                        badgeIcon = "★",
+                        onPlay = { onPlayStation(station) },
+                        onRemove = { onRemoveFavorite(station) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentStationsSection(
+    recents: List<ResolvedStation>,
+    onPlayStation: (ResolvedStation) -> Unit
+) {
+    if (recents.isEmpty()) return
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "🕒 RECENT STATIONS",
+                color = Color(0xFF8E9BAE),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .background(Color(0xFF1E2632), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = "${recents.size}",
+                    color = Color(0xFF8E9BAE),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(recents, key = { it.channelId }) { station ->
+                StationCard(
+                    station = station,
+                    badgeIcon = "📻",
+                    onPlay = { onPlayStation(station) },
+                    onRemove = null
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StationCard(
+    station: ResolvedStation,
+    badgeIcon: String,
+    onPlay: () -> Unit,
+    onRemove: (() -> Unit)?
+) {
+    Card(
+        modifier = Modifier
+            .width(175.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onPlay),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222B38))
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = badgeIcon, fontSize = 13.sp)
+                if (onRemove != null) {
+                    IconButton(
+                        onClick = onRemove,
+                        modifier = Modifier.size(20.dp)
+                    ) {
+                        Text("✕", color = Color(0xFF6E7D91), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = station.title,
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = station.location,
+                color = Color(0xFF8E9BAE),
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

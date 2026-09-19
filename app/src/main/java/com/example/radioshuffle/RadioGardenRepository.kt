@@ -9,7 +9,12 @@ import retrofit2.http.GET
 import retrofit2.http.Path
 import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -20,7 +25,8 @@ data class PlaceRecord(
     @SerializedName("id") val id: String,
     @SerializedName("title") val title: String?,
     @SerializedName("country") val country: String?,
-    @SerializedName("size") val size: Int?
+    @SerializedName("size") val size: Int?,
+    @SerializedName("boost") val boost: Boolean? = false
 )
 
 data class ChannelsEnvelope(@SerializedName("data") val data: ChannelsData?)
@@ -136,8 +142,31 @@ class RadioGardenRepository(
     companion object {
         @Volatile
         private var sharedPlaces: List<PlaceRecord>? = null
+        @Volatile
+        private var sharedPlacesByCountry: Map<String, List<PlaceRecord>>? = null
         private val placesMutex = Mutex()
-        private val sharedRecentlyPlayedIds = ArrayDeque<String>(40)
+
+        // History tracking to eliminate repetition and country clumping
+        private val sharedRecentlyPlayedIds = ArrayDeque<String>(50)
+        private val sharedRecentCountries = ArrayDeque<String>(15)
+
+        // Instant Prefetch Station Pool for zero-latency shuffling
+        private val prefetchStationPool = ArrayDeque<ResolvedStation>(20)
+        private val poolMutex = Mutex()
+        private val isRefilling = AtomicBoolean(false)
+
+        // Search cache pool
+        @Volatile
+        private var cachedSearchQuery: String? = null
+        private val cachedSearchStations = ArrayDeque<ResolvedStation>(40)
+        private val searchMutex = Mutex()
+
+        private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+        private const val POOL_TARGET_SIZE = 10
+        private const val POOL_MIN_THRESHOLD = 4
+        private const val MAX_RECENT_CHANNELS = 50
+        private const val MAX_RECENT_COUNTRIES = 15
 
         private val fallbackPlaces = listOf(
             PlaceRecord("eR8K4rBb", "Tokyo", "Japan", 20),
@@ -194,18 +223,214 @@ class RadioGardenRepository(
 
     suspend fun warmUp() {
         getPlaces()
+        repositoryScope.launch {
+            refillPrefetchPool()
+        }
     }
 
     suspend fun nextStation(query: String? = null): ResolvedStation? {
         val cleanedQuery = query?.trim()?.takeIf { it.isNotBlank() }
         return if (cleanedQuery == null) {
-            randomStation()
+            nextShuffledStation()
         } else {
-            searchStation(cleanedQuery) ?: randomStation(cleanedQuery)
+            nextSearchStation(cleanedQuery)
         }
     }
 
-    private suspend fun searchStation(query: String): ResolvedStation? {
+    private suspend fun nextShuffledStation(): ResolvedStation {
+        // 1. Instant pop from prefetch queue
+        val candidate = poolMutex.withLock {
+            var found: ResolvedStation? = null
+            while (prefetchStationPool.isNotEmpty()) {
+                val popped = prefetchStationPool.removeFirst()
+                if (!isRecentlyPlayed(popped.channelId)) {
+                    found = popped
+                    break
+                }
+            }
+            found
+        }
+
+        checkAndRefillPool()
+
+        if (candidate != null) {
+            rememberStation(candidate)
+            return candidate
+        }
+
+        // 2. Synchronous balanced fallback if queue was empty
+        val liveStation = resolveBalancedStation()
+        if (liveStation != null) {
+            rememberStation(liveStation)
+            checkAndRefillPool()
+            return liveStation
+        }
+
+        // 3. Fallback station
+        return fallbackStation(null)
+    }
+
+    private fun checkAndRefillPool() {
+        repositoryScope.launch {
+            val poolSize = poolMutex.withLock { prefetchStationPool.size }
+            if (poolSize < POOL_MIN_THRESHOLD) {
+                refillPrefetchPool()
+            }
+        }
+    }
+
+    private suspend fun refillPrefetchPool() {
+        if (!isRefilling.compareAndSet(false, true)) return
+        try {
+            val placesByCountry = getPlacesByCountry()
+            if (placesByCountry.isEmpty()) return
+
+            val countries = placesByCountry.keys.toList()
+            if (countries.isEmpty()) return
+
+            var attempts = 0
+            while (attempts < 6) {
+                val currentSize = poolMutex.withLock { prefetchStationPool.size }
+                if (currentSize >= POOL_TARGET_SIZE) break
+
+                attempts++
+                val recentCountriesSnapshot = synchronized(sharedRecentCountries) { sharedRecentCountries.toSet() }
+                val eligibleCountries = countries.filter { it !in recentCountriesSnapshot }.ifEmpty { countries }
+                val chosenCountry = eligibleCountries.random(random)
+
+                val countryPlaces = placesByCountry[chosenCountry].orEmpty()
+                if (countryPlaces.isEmpty()) continue
+
+                val curatedPlaces = countryPlaces.filter { (it.size ?: 0) >= 2 || it.boost == true }
+                val chosenPlace = if (curatedPlaces.isNotEmpty() && random.nextDouble() < 0.80) {
+                    curatedPlaces.random(random)
+                } else {
+                    countryPlaces.random(random)
+                }
+
+                val stations = fetchStationsForPlace(chosenPlace)
+                if (stations.isEmpty()) continue
+
+                val fresh = poolMutex.withLock {
+                    val poolIds = prefetchStationPool.map { it.channelId }.toSet()
+                    stations.filter { station ->
+                        !isRecentlyPlayed(station.channelId) && station.channelId !in poolIds
+                    }.shuffled(random).take(3)
+                }
+
+                if (fresh.isNotEmpty()) {
+                    poolMutex.withLock {
+                        for (s in fresh) {
+                            if (prefetchStationPool.size < POOL_TARGET_SIZE) {
+                                prefetchStationPool.addLast(s)
+                            }
+                        }
+                    }
+                    rememberCountry(chosenCountry)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("RadioGarden", "Prefetch refill failed: ${e.message}")
+        } finally {
+            isRefilling.set(false)
+        }
+    }
+
+    private suspend fun resolveBalancedStation(): ResolvedStation? {
+        val placesByCountry = getPlacesByCountry()
+        if (placesByCountry.isEmpty()) return null
+
+        val countries = placesByCountry.keys.toList()
+        val recentCountriesSnapshot = synchronized(sharedRecentCountries) { sharedRecentCountries.toSet() }
+        val eligibleCountries = countries.filter { it !in recentCountriesSnapshot }.ifEmpty { countries }
+
+        repeat(5) {
+            val country = eligibleCountries.random(random)
+            val countryPlaces = placesByCountry[country].orEmpty()
+            if (countryPlaces.isNotEmpty()) {
+                val curatedPlaces = countryPlaces.filter { (it.size ?: 0) >= 2 || it.boost == true }
+                val place = if (curatedPlaces.isNotEmpty() && random.nextDouble() < 0.80) {
+                    curatedPlaces.random(random)
+                } else {
+                    countryPlaces.random(random)
+                }
+
+                val stations = fetchStationsForPlace(place)
+                val unplayed = stations.firstOrNull { !isRecentlyPlayed(it.channelId) } ?: stations.firstOrNull()
+                if (unplayed != null) {
+                    rememberCountry(country)
+                    return unplayed
+                }
+            }
+        }
+        return null
+    }
+
+    private suspend fun fetchStationsForPlace(place: PlaceRecord): List<ResolvedStation> {
+        val channelsEnv = runCatching { service.fetchChannelsForPlace(place.id) }
+            .getOrNull()
+            ?: runCatching { service.fetchPage(place.id) }.getOrNull()
+
+        return channelsEnv?.data?.content
+            ?.flatMap { it.items ?: emptyList() }
+            ?.mapNotNull { it.page }
+            ?.filter { it.isChannel && !it.channelPath.isNullOrBlank() }
+            ?.mapNotNull { page ->
+                val channelId = extractIdFromUrl(page.channelPath) ?: return@mapNotNull null
+                ResolvedStation(
+                    channelId = channelId,
+                    title = page.title ?: "World Radio",
+                    city = page.place?.title ?: place.title ?: "Unknown City",
+                    country = page.country?.title ?: place.country ?: "Worldwide"
+                )
+            }.orEmpty()
+    }
+
+    private suspend fun nextSearchStation(query: String): ResolvedStation? {
+        val cached = searchMutex.withLock {
+            if (query.equals(cachedSearchQuery, ignoreCase = true) && cachedSearchStations.isNotEmpty()) {
+                while (cachedSearchStations.isNotEmpty()) {
+                    val candidate = cachedSearchStations.removeFirst()
+                    if (!isRecentlyPlayed(candidate.channelId)) {
+                        return@withLock candidate
+                    }
+                }
+            }
+
+            cachedSearchQuery = query
+            cachedSearchStations.clear()
+
+            val freshStations = executeSearch(query)
+            if (freshStations.isNotEmpty()) {
+                cachedSearchStations.addAll(freshStations)
+                val chosen = cachedSearchStations.firstOrNull { !isRecentlyPlayed(it.channelId) }
+                    ?: cachedSearchStations.first()
+                cachedSearchStations.remove(chosen)
+                return@withLock chosen
+            }
+            null
+        }
+
+        if (cached != null) {
+            rememberStation(cached)
+            return cached
+        }
+
+        // Local search in places list (for cities, countries)
+        val localPlaceMatches = searchLocalPlaces(query)
+        for (place in localPlaceMatches.shuffled(random).take(3)) {
+            val stations = fetchStationsForPlace(place)
+            if (stations.isNotEmpty()) {
+                val chosen = stations.firstOrNull { !isRecentlyPlayed(it.channelId) } ?: stations.first()
+                rememberStation(chosen)
+                return chosen
+            }
+        }
+
+        return fallbackStation(query)
+    }
+
+    private suspend fun executeSearch(query: String): List<ResolvedStation> {
         val results = runCatching { service.search(query) }
             .onFailure { Log.w("RadioGarden", "Search failed: ${it.message}") }
             .getOrNull()
@@ -214,120 +439,52 @@ class RadioGardenRepository(
             ?.mapNotNull { it.source }
             .orEmpty()
 
-        val channelSources = results
-            .filter { it.type.equals("channel", ignoreCase = true) && !it.url.isNullOrBlank() }
-            .shuffled(random)
+        if (results.isEmpty()) return emptyList()
 
-        chooseFresh(channelSources, { extractIdFromUrl(it.url) })?.let { source ->
-            val channelId = extractIdFromUrl(source.url)
-            if (!channelId.isNullOrBlank()) {
-                remember(channelId)
-                return ResolvedStation(
-                    channelId = channelId,
-                    title = source.title ?: "Radio Station",
-                    city = source.page?.place?.title ?: source.subtitle.cityPart(),
-                    country = source.page?.country?.title ?: source.subtitle.countryPart()
-                )
+        val gathered = mutableListOf<ResolvedStation>()
+
+        // 1. Direct channel hits
+        for (source in results) {
+            if (source.type.equals("channel", ignoreCase = true) && !source.url.isNullOrBlank()) {
+                val channelId = extractIdFromUrl(source.url)
+                if (!channelId.isNullOrBlank()) {
+                    gathered.add(
+                        ResolvedStation(
+                            channelId = channelId,
+                            title = source.title ?: "Radio Station",
+                            city = source.page?.place?.title ?: source.subtitle.cityPart(),
+                            country = source.page?.country?.title ?: source.subtitle.countryPart()
+                        )
+                    )
+                }
             }
         }
 
-        val placeSources = results
-            .filter {
-                (it.type.equals("place", ignoreCase = true) ||
-                    it.type.equals("country", ignoreCase = true)) &&
-                    !it.url.isNullOrBlank()
-            }
-            .shuffled(random)
+        // 2. Resolve top place or country hits (up to 2)
+        val placeSources = results.filter {
+            (it.type.equals("place", ignoreCase = true) || it.type.equals("country", ignoreCase = true)) &&
+                !it.url.isNullOrBlank()
+        }.take(2)
 
         for (source in placeSources) {
             val placeId = extractIdFromUrl(source.url) ?: continue
-            val place = PlaceRecord(
+            val tempPlace = PlaceRecord(
                 id = placeId,
                 title = source.title ?: source.subtitle.cityPart(),
                 country = source.subtitle.countryPart(),
                 size = 1
             )
-
-            resolveFromPlace(place, query)?.let { return it }
+            gathered.addAll(fetchStationsForPlace(tempPlace))
         }
 
-        return null
+        return gathered.distinctBy { it.channelId }.shuffled(random)
     }
 
-    private suspend fun randomStation(query: String? = null): ResolvedStation? {
-        val places = getPlaces().ifEmpty { fallbackPlaces }
-
-        val filteredPlaces = if (query.isNullOrBlank()) {
-            places
-        } else {
-            places.filter { place ->
-                place.title.containsQuery(query) || place.country.containsQuery(query)
-            }.ifEmpty { places }
+    private suspend fun searchLocalPlaces(query: String): List<PlaceRecord> {
+        val places = getPlaces()
+        return places.filter { place ->
+            place.title.containsQuery(query) || place.country.containsQuery(query)
         }
-
-        val attempts = if (query.isNullOrBlank()) 10 else 15
-        repeat(attempts) {
-            val place = filteredPlaces[random.nextInt(filteredPlaces.size)]
-            resolveFromPlace(place, query)?.let { return it }
-        }
-
-        return fallbackStation(query)
-    }
-
-    private fun fallbackStation(query: String? = null): ResolvedStation {
-        val matching = if (query.isNullOrBlank()) {
-            fallbackStations
-        } else {
-            fallbackStations.filter { s ->
-                s.title.containsQuery(query) ||
-                    s.city.containsQuery(query) ||
-                    s.country.containsQuery(query)
-            }.ifEmpty { fallbackStations }
-        }
-
-        val fresh = chooseFresh(matching.shuffled(random)) { it.channelId }
-            ?: matching.random(random)
-
-        remember(fresh.channelId)
-        return fresh
-    }
-
-    private suspend fun resolveFromPlace(place: PlaceRecord, query: String? = null): ResolvedStation? {
-        val page = runCatching { service.fetchPage(place.id) }.getOrNull()
-            ?: runCatching { service.fetchChannelsForPlace(place.id) }
-                .onFailure { Log.w("RadioGarden", "Failed to fetch channels for ${place.id}: ${it.message}") }
-                .getOrNull()
-
-        val stations = page?.data?.content
-            ?.flatMap { it.items ?: emptyList() }
-            ?.mapNotNull { it.page }
-            ?.filter { it.isChannel && !it.channelPath.isNullOrBlank() }
-            ?.shuffled(random)
-            .orEmpty()
-
-        if (stations.isEmpty()) return null
-
-        val queryMatches = query?.takeIf { it.isNotBlank() }?.let { cleanQuery ->
-            stations.filter { station ->
-                station.title.containsQuery(cleanQuery) ||
-                    station.place?.title.containsQuery(cleanQuery) ||
-                    station.country?.title.containsQuery(cleanQuery)
-            }
-        }.orEmpty()
-
-        val orderedStations = if (queryMatches.isEmpty()) stations else queryMatches + (stations - queryMatches.toSet())
-        val candidate = chooseFresh(orderedStations, { extractIdFromUrl(it.channelPath) }) ?: return null
-        val channelId = extractIdFromUrl(candidate.channelPath) ?: return null
-
-        if (channelId.isBlank()) return null
-
-        remember(channelId)
-        return ResolvedStation(
-            channelId = channelId,
-            title = candidate.title ?: "World Radio",
-            city = candidate.place?.title ?: place.title ?: "Unknown City",
-            country = candidate.country?.title ?: place.country ?: "Worldwide"
-        )
     }
 
     private suspend fun getPlaces(): List<PlaceRecord> {
@@ -341,11 +498,13 @@ class RadioGardenRepository(
                 ?.data
                 ?.list
                 ?.filter { (it.size ?: 0) > 0 && it.id.isNotBlank() }
-                ?.shuffled(random)
                 .orEmpty()
 
             if (fetched.isNotEmpty()) {
                 sharedPlaces = fetched
+                sharedPlacesByCountry = fetched
+                    .filter { !it.country.isNullOrBlank() }
+                    .groupBy { it.country!! }
                 fetched
             } else {
                 fallbackPlaces
@@ -353,22 +512,55 @@ class RadioGardenRepository(
         }
     }
 
-    private fun remember(channelId: String) {
-        synchronized(sharedRecentlyPlayedIds) {
-            if (sharedRecentlyPlayedIds.size >= 40) {
-                sharedRecentlyPlayedIds.removeFirst()
-            }
-            sharedRecentlyPlayedIds.addLast(channelId)
+    private suspend fun getPlacesByCountry(): Map<String, List<PlaceRecord>> {
+        sharedPlacesByCountry?.let { return it }
+        getPlaces()
+        return sharedPlacesByCountry ?: fallbackPlaces.groupBy { it.country ?: "Worldwide" }
+    }
+
+    private fun isRecentlyPlayed(channelId: String): Boolean {
+        return synchronized(sharedRecentlyPlayedIds) {
+            sharedRecentlyPlayedIds.contains(channelId)
         }
     }
 
-    private fun <T> chooseFresh(items: List<T>, idFor: (T) -> String?): T? {
-        if (items.isEmpty()) return null
-        val recentSnapshot = synchronized(sharedRecentlyPlayedIds) { sharedRecentlyPlayedIds.toSet() }
-        return items.firstOrNull { item ->
-            val id = idFor(item)
-            !id.isNullOrBlank() && !recentSnapshot.contains(id)
-        } ?: items.firstOrNull()
+    private fun rememberStation(station: ResolvedStation) {
+        synchronized(sharedRecentlyPlayedIds) {
+            if (sharedRecentlyPlayedIds.size >= MAX_RECENT_CHANNELS) {
+                sharedRecentlyPlayedIds.removeFirst()
+            }
+            sharedRecentlyPlayedIds.addLast(station.channelId)
+        }
+        if (station.country.isNotBlank()) {
+            rememberCountry(station.country)
+        }
+    }
+
+    private fun rememberCountry(country: String) {
+        synchronized(sharedRecentCountries) {
+            if (sharedRecentCountries.size >= MAX_RECENT_COUNTRIES) {
+                sharedRecentCountries.removeFirst()
+            }
+            sharedRecentCountries.addLast(country)
+        }
+    }
+
+    private fun fallbackStation(query: String? = null): ResolvedStation {
+        val matching = if (query.isNullOrBlank()) {
+            fallbackStations
+        } else {
+            fallbackStations.filter { s ->
+                s.title.containsQuery(query) ||
+                    s.city.containsQuery(query) ||
+                    s.country.containsQuery(query)
+            }.ifEmpty { fallbackStations }
+        }
+
+        val unplayed = matching.firstOrNull { !isRecentlyPlayed(it.channelId) }
+            ?: matching.random(random)
+
+        rememberStation(unplayed)
+        return unplayed
     }
 
     private fun extractIdFromUrl(url: String?): String? {
