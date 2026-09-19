@@ -7,34 +7,10 @@ plugins {
 val releaseStoreFilePath = (findProperty("RELEASE_STORE_FILE") as? String)?.takeIf { it.isNotBlank() }
 val releaseStorePassword = (findProperty("RELEASE_STORE_PASSWORD") as? String)?.takeIf { it.isNotBlank() }
 val releaseKeyAlias = (findProperty("RELEASE_KEY_ALIAS") as? String)?.takeIf { it.isNotBlank() }
-val releaseKeyPassword = (findProperty("RELEASE_KEY_PASSWORD") as? String)?.takeIf { it.isNotBlank() }
+val releaseKeyPassword = (findProperty("RELEASE_KEY_PASSWORD") as? String)?.takeIf { it.isNotBlank() } ?: releaseStorePassword
 val hasReleaseSigning = releaseStoreFilePath != null &&
     releaseStorePassword != null &&
     releaseKeyAlias != null
-
-fun resolveKeyPassword(storeFile: java.io.File?, storePass: String?, keyPass: String?, alias: String?): String? {
-    if (storeFile == null || !storeFile.exists() || storePass == null || alias == null) return keyPass ?: storePass
-    val candidate = keyPass?.takeIf { it.isNotBlank() } ?: return storePass
-    return try {
-        val ks = java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType())
-        storeFile.inputStream().use { ks.load(it, storePass.toCharArray()) }
-        try {
-            ks.getKey(alias, candidate.toCharArray())
-            candidate
-        } catch (_: Exception) {
-            storePass
-        }
-    } catch (_: Exception) {
-        candidate
-    }
-}
-
-val actualKeyPassword = resolveKeyPassword(
-    storeFile = releaseStoreFilePath?.let { file(it) },
-    storePass = releaseStorePassword,
-    keyPass = releaseKeyPassword,
-    alias = releaseKeyAlias
-)
 
 android {
     namespace = "com.example.radioshuffle"
@@ -60,7 +36,7 @@ android {
                 storeFile = file(releaseStoreFilePath!!)
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
-                keyPassword = actualKeyPassword
+                keyPassword = releaseKeyPassword
             }
         }
     }

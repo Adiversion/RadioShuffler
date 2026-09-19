@@ -170,7 +170,7 @@ jobs:
             -PRELEASE_STORE_FILE="$RUNNER_TEMP/radioshuffler-release.keystore" \
             -PRELEASE_STORE_PASSWORD="$RELEASE_STORE_PASSWORD" \
             -PRELEASE_KEY_ALIAS="radioshuffler" \
-            -PRELEASE_KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
+            -PRELEASE_KEY_PASSWORD="$RELEASE_STORE_PASSWORD"
 
       - name: Rename APK for Release
         run: |
