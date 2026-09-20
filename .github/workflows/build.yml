@@ -1,6 +1,9 @@
 name: Build & Release App
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       version_tag:
@@ -107,7 +110,7 @@ jobs:
           import subprocess
 
           manual = os.environ.get("MANUAL_VERSION_TAG", "").strip()
-          bump = os.environ.get("VERSION_BUMP", "patch").strip()
+          bump = os.environ.get("VERSION_BUMP", "patch").strip() or "patch"
 
           def normalize(tag):
               tag = tag.strip()

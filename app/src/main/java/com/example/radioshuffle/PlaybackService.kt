@@ -6,18 +6,23 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.view.KeyEvent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Metadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.metadata.icy.IcyInfo
+import androidx.media3.extractor.metadata.id3.TextInformationFrame
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaNotification
@@ -40,8 +45,12 @@ class PlaybackService : MediaSessionService() {
     private val repository = RadioGardenRepository()
     private var shuffleJob: Job? = null
     private var stationHealthJob: Job? = null
+    private var metadataProbeJob: Job? = null
     private var consecutiveAutoSkips = 0
     private var pendingShuffleCue = false
+    private var currentStation: ResolvedStation? = null
+    @Volatile
+    private var currentTrackTitle: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -84,16 +93,53 @@ class PlaybackService : MediaSessionService() {
             .setUsage(C.USAGE_MEDIA)
             .build()
 
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 15_000,
+                /* maxBufferMs = */ 30_000,
+                /* bufferForPlaybackMs = */ 1_500,
+                /* bufferForPlaybackAfterRebufferMs = */ 3_000
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+
         val basePlayer = ExoPlayer.Builder(this)
             .setMediaSourceFactory(mediaSourceFactory)
+            .setLoadControl(loadControl)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
 
         basePlayer.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                currentTrackTitle = null
+                metadataProbeJob?.cancel()
                 if (mediaItem != null) {
                     scheduleStationHealthCheck(basePlayer)
+                    scheduleMetadataProbe(basePlayer, mediaItem)
+                }
+            }
+
+            override fun onMetadata(metadata: Metadata) {
+                for (i in 0 until metadata.length()) {
+                    val entry = metadata.get(i)
+                    when (entry) {
+                        is IcyInfo -> {
+                            val streamTitle = entry.title?.trim()
+                            if (!streamTitle.isNullOrBlank()) {
+                                updateNowPlayingTrack(basePlayer, streamTitle)
+                            }
+                        }
+                        is TextInformationFrame -> {
+                            if (entry.id == "TIT2") {
+                                val songTitle = entry.values.firstOrNull()?.trim()
+                                if (!songTitle.isNullOrBlank()) {
+                                    updateNowPlayingTrack(basePlayer, songTitle)
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -229,12 +275,15 @@ class PlaybackService : MediaSessionService() {
 
     private fun shuffleBackground(player: Player, playCue: Boolean) {
         shuffleJob?.cancel()
+        metadataProbeJob?.cancel()
+        currentTrackTitle = null
         shuffleJob = serviceScope.launch {
             try {
                 val station = withContext(Dispatchers.IO) {
                     repository.nextStation()
                 } ?: return@launch
 
+                currentStation = station
                 player.stop()
                 player.clearMediaItems()
                 player.setMediaItem(station.toMediaItem())
@@ -268,19 +317,85 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    private fun updateNowPlayingTrack(player: Player, trackTitle: String) {
+        val trimmed = trackTitle.trim()
+        if (trimmed.isBlank() || trimmed.equals(currentTrackTitle, ignoreCase = true)) return
+        currentTrackTitle = trimmed
+        metadataProbeJob?.cancel()
+
+        val currentItem = player.currentMediaItem ?: return
+        val currentMeta = currentItem.mediaMetadata
+        val stationTitle = currentMeta.albumTitle?.toString()
+            ?: currentMeta.extras?.getString("station_title")
+            ?: currentStation?.title
+            ?: "Radio Station"
+        val stationLocation = currentMeta.subtitle?.toString()
+            ?: currentStation?.location
+            ?: ""
+
+        if (trimmed.equals(stationTitle, ignoreCase = true)) return
+
+        val updatedExtras = (currentMeta.extras ?: Bundle()).apply {
+            putString("station_title", stationTitle)
+            putString("track_title", trimmed)
+        }
+
+        val updatedMetadata = currentMeta.buildUpon()
+            .setTitle(trimmed)
+            .setDisplayTitle(trimmed)
+            .setAlbumTitle(stationTitle)
+            .setArtist(stationTitle)
+            .setSubtitle(stationLocation)
+            .setExtras(updatedExtras)
+            .build()
+
+        val updatedItem = currentItem.buildUpon()
+            .setMediaMetadata(updatedMetadata)
+            .build()
+
+        if (player.currentMediaItemIndex >= 0) {
+            player.replaceMediaItem(player.currentMediaItemIndex, updatedItem)
+        }
+        player.playlistMetadata = updatedMetadata
+    }
+
+    private fun scheduleMetadataProbe(player: Player, mediaItem: MediaItem) {
+        metadataProbeJob?.cancel()
+        val uri = mediaItem.localConfiguration?.uri?.toString() ?: mediaItem.requestMetadata.mediaUri?.toString()
+        if (uri.isNullOrBlank()) return
+
+        metadataProbeJob = serviceScope.launch {
+            delay(3_500)
+            if (currentTrackTitle.isNullOrBlank() && player.currentMediaItem?.mediaId == mediaItem.mediaId) {
+                val probedTitle = IcyStreamMetadata.probeTrackTitle(uri)
+                if (!probedTitle.isNullOrBlank() && currentTrackTitle.isNullOrBlank() && player.currentMediaItem?.mediaId == mediaItem.mediaId) {
+                    updateNowPlayingTrack(player, probedTitle)
+                }
+            }
+        }
+    }
+
     private fun ResolvedStation.toMediaItem(): MediaItem {
         val artworkBytes = StationArtwork.getArtworkData(this@PlaybackService)
         val artworkUri = StationArtwork.getArtworkUri(this@PlaybackService)
 
+        val extras = Bundle().apply {
+            putString("station_title", title)
+            putString("station_city", city)
+            putString("station_country", country)
+        }
+
         val metaBuilder = MediaMetadata.Builder()
             .setTitle(title)
             .setDisplayTitle(title)
+            .setAlbumTitle(title)
             .setArtist(location)
             .setSubtitle(location)
             .setDescription(channelId)
             .setIsPlayable(true)
             .setMediaType(MediaMetadata.MEDIA_TYPE_RADIO_STATION)
             .setArtworkUri(artworkUri)
+            .setExtras(extras)
 
         if (artworkBytes != null) {
             metaBuilder.setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
@@ -298,6 +413,7 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         shuffleJob?.cancel()
         stationHealthJob?.cancel()
+        metadataProbeJob?.cancel()
         serviceScope.cancel()
         mediaSession?.run {
             player.release()

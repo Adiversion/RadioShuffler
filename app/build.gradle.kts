@@ -99,6 +99,7 @@ dependencies {
     // Media3 (Playback and Background MediaSession)
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-session:1.4.1")
+    implementation("androidx.media3:media3-extractor:1.4.1")
 
     // Networking
     implementation("com.squareup.retrofit2:retrofit:2.11.0")

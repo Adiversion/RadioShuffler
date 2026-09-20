@@ -199,11 +199,11 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
-            val current = _uiState.value
-            val streamTitle = mediaMetadata.title?.toString()
-            if (current is RadioUiState.Playing && !streamTitle.isNullOrBlank() && streamTitle != current.title) {
-                _uiState.value = current.copy(currentTrack = streamTitle)
-            }
+            applyMetadataUpdate(mediaMetadata)
+        }
+
+        override fun onPlaylistMetadataChanged(mediaMetadata: MediaMetadata) {
+            applyMetadataUpdate(mediaMetadata)
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -212,8 +212,13 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                 ?: meta?.description?.toString()?.takeIf { it.isNotBlank() }
 
             if (meta != null) {
-                val title = meta.title?.toString() ?: "Radio Station"
-                val location = meta.artist?.toString() ?: ""
+                val stationTitle = meta.albumTitle?.toString()
+                    ?: meta.extras?.getString("station_title")
+                    ?: meta.title?.toString()
+                    ?: "Radio Station"
+                val location = meta.subtitle?.toString()
+                    ?: meta.artist?.toString()
+                    ?: ""
                 val locParts = location.split(", ")
                 val city = locParts.getOrNull(0).orEmpty()
                 val country = locParts.getOrNull(1).orEmpty()
@@ -221,7 +226,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                 if (!channelId.isNullOrBlank()) {
                     val activeStation = ResolvedStation(
                         channelId = channelId,
-                        title = title,
+                        title = stationTitle,
                         city = city,
                         country = country
                     )
@@ -231,13 +236,45 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                     _isCurrentFavorite.value = favoritesManager.isFavorite(channelId)
                 }
 
-                publishPlayingState(meta, isPlaying = true, isBuffering = true)
+                val explicitTrack = meta.extras?.getString("track_title")
+                val rawTitle = meta.title?.toString()
+                val initialTrack = when {
+                    !explicitTrack.isNullOrBlank() && !explicitTrack.equals(stationTitle, ignoreCase = true) -> explicitTrack
+                    !rawTitle.isNullOrBlank() && !rawTitle.equals(stationTitle, ignoreCase = true) -> rawTitle
+                    else -> null
+                }
+
+                publishPlayingState(meta, isPlaying = true, isBuffering = true, trackTitle = initialTrack)
             }
         }
 
         override fun onPlayerError(error: PlaybackException) {
             _uiState.value = RadioUiState.Loading("Station failed. Auto-skipping...")
         }
+    }
+
+    private fun applyMetadataUpdate(mediaMetadata: MediaMetadata) {
+        val current = _uiState.value
+        if (current !is RadioUiState.Playing) return
+
+        val stationName = mediaMetadata.albumTitle?.toString()
+            ?: mediaMetadata.extras?.getString("station_title")
+            ?: currentStation?.title
+            ?: current.title
+
+        val explicitTrack = mediaMetadata.extras?.getString("track_title")
+        val rawTitle = mediaMetadata.title?.toString()
+
+        val detectedTrack = when {
+            !explicitTrack.isNullOrBlank() && !explicitTrack.equals(stationName, ignoreCase = true) -> explicitTrack
+            !rawTitle.isNullOrBlank() && !rawTitle.equals(stationName, ignoreCase = true) -> rawTitle
+            else -> current.currentTrack
+        }
+
+        _uiState.value = current.copy(
+            title = stationName,
+            currentTrack = detectedTrack
+        )
     }
 
     fun setController(mediaController: MediaController) {
@@ -253,10 +290,6 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                 isPlaying = mediaController.isPlaying,
                 isBuffering = mediaController.playbackState == Player.STATE_BUFFERING
             )
-        }
-
-        viewModelScope.launch(Dispatchers.IO) {
-            repository.warmUp()
         }
     }
 
@@ -464,15 +497,23 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         val artworkBytes = StationArtwork.getArtworkData(context)
         val artworkUri = StationArtwork.getArtworkUri(context)
 
+        val extras = android.os.Bundle().apply {
+            putString("station_title", station.title)
+            putString("station_city", station.city)
+            putString("station_country", station.country)
+        }
+
         val metadataBuilder = MediaMetadata.Builder()
             .setTitle(station.title)
             .setDisplayTitle(station.title)
+            .setAlbumTitle(station.title)
             .setArtist(station.location)
             .setSubtitle(station.location)
             .setDescription(station.channelId)
             .setIsPlayable(true)
             .setMediaType(MediaMetadata.MEDIA_TYPE_RADIO_STATION)
             .setArtworkUri(artworkUri)
+            .setExtras(extras)
 
         if (artworkBytes != null) {
             metadataBuilder.setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
@@ -506,10 +547,14 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
     private fun publishPlayingState(
         metadata: MediaMetadata,
         isPlaying: Boolean,
-        isBuffering: Boolean
+        isBuffering: Boolean,
+        trackTitle: String? = null
     ) {
-        val stationTitle = metadata.title?.toString() ?: "Radio Station"
-        val locationParts = (metadata.artist?.toString() ?: "").split(", ")
+        val stationTitle = metadata.albumTitle?.toString()
+            ?: metadata.extras?.getString("station_title")
+            ?: metadata.title?.toString()
+            ?: "Radio Station"
+        val locationParts = (metadata.subtitle?.toString() ?: metadata.artist?.toString() ?: "").split(", ")
         val city = locationParts.getOrNull(0).orEmpty()
         val country = locationParts.getOrNull(1).orEmpty()
         val channelId = currentStation?.channelId.orEmpty()
@@ -522,7 +567,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
             title = stationTitle,
             city = city,
             country = country,
-            currentTrack = null,
+            currentTrack = trackTitle,
             isPlaying = isPlaying,
             isBuffering = isBuffering,
             channelId = channelId

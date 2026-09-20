@@ -109,10 +109,11 @@ interface RadioGardenService {
     suspend fun search(@Query("q") query: String): SearchEnvelope
 
     companion object {
-        fun create(): RadioGardenService {
+        val instance: RadioGardenService by lazy {
             val client = OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(25, TimeUnit.SECONDS)
+                .connectionPool(okhttp3.ConnectionPool(5, 5, TimeUnit.MINUTES))
                 .retryOnConnectionFailure(true)
                 .addInterceptor { chain ->
                     val request = chain.request().newBuilder()
@@ -125,18 +126,20 @@ interface RadioGardenService {
                 }
                 .build()
 
-            return Retrofit.Builder()
+            Retrofit.Builder()
                 .baseUrl("https://radio.garden/api/")
                 .client(client)
                 .addConverterFactory(GsonConverterFactory.create())
                 .build()
                 .create(RadioGardenService::class.java)
         }
+
+        fun create(): RadioGardenService = instance
     }
 }
 
 class RadioGardenRepository(
-    private val service: RadioGardenService = RadioGardenService.create(),
+    private val service: RadioGardenService = RadioGardenService.instance,
     private val random: Random = Random.Default
 ) {
     companion object {
@@ -150,8 +153,8 @@ class RadioGardenRepository(
         private val sharedRecentlyPlayedIds = ArrayDeque<String>(50)
         private val sharedRecentCountries = ArrayDeque<String>(35)
 
-        // Instant Prefetch Station Pool for zero-latency shuffling
-        private val prefetchStationPool = ArrayDeque<ResolvedStation>(20)
+        // Lean instant prefetch station pool for zero-latency shuffling with minimal battery usage
+        private val prefetchStationPool = ArrayDeque<ResolvedStation>(10)
         private val poolMutex = Mutex()
         private val isRefilling = AtomicBoolean(false)
 
@@ -163,8 +166,8 @@ class RadioGardenRepository(
 
         private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-        private const val POOL_TARGET_SIZE = 10
-        private const val POOL_MIN_THRESHOLD = 4
+        private const val POOL_TARGET_SIZE = 3
+        private const val POOL_MIN_THRESHOLD = 1
         private const val MAX_RECENT_CHANNELS = 50
         private const val MAX_RECENT_COUNTRIES = 25
 
@@ -325,7 +328,7 @@ class RadioGardenRepository(
             if (countries.isEmpty()) return
 
             var attempts = 0
-            while (attempts < 14) {
+            while (attempts < 6) {
                 val currentSize = poolMutex.withLock { prefetchStationPool.size }
                 if (currentSize >= POOL_TARGET_SIZE) break
 
@@ -442,7 +445,14 @@ class RadioGardenRepository(
 
             val freshStations = executeSearch(query)
             if (freshStations.isNotEmpty()) {
-                cachedSearchStations.addAll(freshStations.shuffled(random))
+                val (primaryMatches, secondaryMatches) = freshStations.partition { it.isRelevantMatch(query) }
+                if (primaryMatches.isNotEmpty()) {
+                    cachedSearchStations.addAll(primaryMatches.shuffled(random))
+                    cachedSearchStations.addAll(secondaryMatches.shuffled(random))
+                } else {
+                    cachedSearchStations.addAll(freshStations.shuffled(random))
+                }
+
                 val chosen = cachedSearchStations.firstOrNull { !isRecentlyPlayed(it.channelId) }
                     ?: cachedSearchStations.first()
                 cachedSearchStations.remove(chosen)
@@ -517,7 +527,30 @@ class RadioGardenRepository(
             gathered.addAll(fetchStationsForPlace(tempPlace))
         }
 
-        return gathered.distinctBy { it.channelId }.shuffled(random)
+        val distinctList = gathered.distinctBy { it.channelId }
+        val (primary, secondary) = distinctList.partition { it.isRelevantMatch(query) }
+        return primary + secondary
+    }
+
+    private fun ResolvedStation.isRelevantMatch(query: String): Boolean {
+        val cleanQ = query.trim().lowercase()
+        if (cleanQ.isBlank()) return true
+
+        val strippedQ = cleanQ.replace("-", "").replace(" ", "")
+        val titleLower = title.lowercase()
+        val locationLower = location.lowercase()
+        val strippedCombined = (titleLower + " " + locationLower).replace("-", "").replace(" ", "")
+
+        if (titleLower.contains(cleanQ) || locationLower.contains(cleanQ) || strippedCombined.contains(strippedQ)) {
+            return true
+        }
+
+        val queryWords = cleanQ.split("-", " ").filter { it.length >= 3 }
+        if (queryWords.isNotEmpty() && queryWords.all { titleLower.contains(it) || locationLower.contains(it) }) {
+            return true
+        }
+
+        return false
     }
 
     private suspend fun searchLocalPlaces(query: String): List<PlaceRecord> {
