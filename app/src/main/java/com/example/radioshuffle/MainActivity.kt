@@ -188,8 +188,9 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         override fun onPlaybackStateChanged(playbackState: Int) {
             val current = _uiState.value
             if (current is RadioUiState.Playing) {
+                val isBuffering = playbackState == Player.STATE_BUFFERING && !current.isPlaying
                 _uiState.value = current.copy(
-                    isBuffering = playbackState == Player.STATE_BUFFERING
+                    isBuffering = isBuffering
                 )
             }
         }
@@ -197,7 +198,32 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             val current = _uiState.value
             if (current is RadioUiState.Playing) {
-                _uiState.value = current.copy(isPlaying = isPlaying)
+                val isBuffering = if (isPlaying) false else (controller?.playbackState == Player.STATE_BUFFERING)
+                _uiState.value = current.copy(
+                    isPlaying = isPlaying,
+                    isBuffering = isBuffering
+                )
+            }
+        }
+
+        override fun onEvents(player: Player, events: Player.Events) {
+            if (events.containsAny(
+                    Player.EVENT_PLAYBACK_STATE_CHANGED,
+                    Player.EVENT_IS_PLAYING_CHANGED,
+                    Player.EVENT_PLAY_WHEN_READY_CHANGED
+                )
+            ) {
+                val current = _uiState.value
+                if (current is RadioUiState.Playing) {
+                    val isPlaying = player.isPlaying
+                    val isBuffering = player.playbackState == Player.STATE_BUFFERING && !isPlaying
+                    if (current.isPlaying != isPlaying || current.isBuffering != isBuffering) {
+                        _uiState.value = current.copy(
+                            isPlaying = isPlaying,
+                            isBuffering = isBuffering
+                        )
+                    }
+                }
             }
         }
 
@@ -247,7 +273,9 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                     else -> null
                 }
 
-                publishPlayingState(meta, isPlaying = true, isBuffering = true, trackTitle = initialTrack)
+                val isPlaying = controller?.isPlaying == true
+                val isBuffering = (controller?.playbackState == Player.STATE_BUFFERING) && !isPlaying
+                publishPlayingState(meta, isPlaying = isPlaying, isBuffering = isBuffering, trackTitle = initialTrack)
             }
         }
 
@@ -314,7 +342,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
             publishPlayingState(
                 metadata = meta,
                 isPlaying = mediaController.isPlaying,
-                isBuffering = mediaController.playbackState == Player.STATE_BUFFERING
+                isBuffering = mediaController.playbackState == Player.STATE_BUFFERING && !mediaController.isPlaying
             )
         }
     }
@@ -576,7 +604,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
             city = station.city,
             country = station.country,
             currentTrack = null,
-            isPlaying = true,
+            isPlaying = false,
             isBuffering = true,
             channelId = station.channelId
         )
@@ -601,13 +629,15 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
             _isCurrentFavorite.value = favoritesManager.isFavorite(channelId)
         }
 
+        val effectiveBuffering = isBuffering && !isPlaying
+
         _uiState.value = RadioUiState.Playing(
             title = stationTitle,
             city = city,
             country = country,
             currentTrack = trackTitle,
             isPlaying = isPlaying,
-            isBuffering = isBuffering,
+            isBuffering = effectiveBuffering,
             channelId = channelId
         )
     }
@@ -1628,7 +1658,7 @@ private fun MiniPlayerBar(
     onOpenPlayer: () -> Unit
 ) {
     val isPlaying = (state as? RadioUiState.Playing)?.isPlaying == true
-    val isBuffering = (state as? RadioUiState.Playing)?.isBuffering == true || state is RadioUiState.Loading
+    val isBuffering = ((state as? RadioUiState.Playing)?.let { it.isBuffering && !it.isPlaying } == true) || state is RadioUiState.Loading
     val title = when (state) {
         is RadioUiState.Playing -> state.title
         is RadioUiState.Loading -> state.message
@@ -2059,6 +2089,7 @@ private fun RadioStatus(
                 }
 
                 is RadioUiState.Playing -> {
+                    val isActuallyBuffering = current.isBuffering && !current.isPlaying
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -2068,7 +2099,7 @@ private fun RadioStatus(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .background(
-                                    if (current.isBuffering) Color(0x26FFC107) else Color(0x1A00E676),
+                                    if (isActuallyBuffering) Color(0x26FFC107) else Color(0x1A00E676),
                                     RoundedCornerShape(20.dp)
                                 )
                                 .padding(horizontal = 10.dp, vertical = 4.dp)
@@ -2077,16 +2108,16 @@ private fun RadioStatus(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(if (current.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676))
+                                    .background(if (isActuallyBuffering) Color(0xFFFFC107) else Color(0xFF00E676))
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = when {
-                                    current.isBuffering -> "BUFFERING"
+                                    isActuallyBuffering -> "BUFFERING"
                                     current.isPlaying -> "LIVE STREAM"
                                     else -> "PAUSED"
                                 },
-                                color = if (current.isBuffering) Color(0xFFFFC107) else Color(0xFF00E676),
+                                color = if (isActuallyBuffering) Color(0xFFFFC107) else Color(0xFF00E676),
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 1.sp
@@ -2197,7 +2228,7 @@ private fun RadioStatus(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = if (current.isBuffering) "Connecting stream..." else "Live Broadcast",
+                                    text = if (isActuallyBuffering) "Connecting stream..." else "Live Broadcast",
                                     color = Color(0xFF6E7D91),
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Normal,
@@ -2213,7 +2244,7 @@ private fun RadioStatus(
                         modifier = Modifier.size(56.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (current.isBuffering) {
+                        if (isActuallyBuffering) {
                             CircularProgressIndicator(
                                 color = Color(0xFF00E676),
                                 strokeWidth = 3.dp,
