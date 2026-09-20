@@ -111,7 +111,18 @@ class PlaybackService : MediaSessionService() {
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
 
+        val initialSession = basePlayer.audioSessionId
+        if (initialSession != 0) {
+            openAudioEffectSession(initialSession)
+            EqualizerHelper.attachSession(applicationContext, initialSession)
+        }
+
         basePlayer.addListener(object : Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                openAudioEffectSession(audioSessionId)
+                EqualizerHelper.attachSession(applicationContext, audioSessionId)
+            }
+
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 currentTrackTitle = null
                 metadataProbeJob?.cancel()
@@ -143,9 +154,25 @@ class PlaybackService : MediaSessionService() {
                 }
             }
 
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (!playWhenReady) {
+                    // Manual pause by user: CANCEL all auto-skip / health timers immediately
+                    stationHealthJob?.cancel()
+                    consecutiveAutoSkips = 0
+                } else if (basePlayer.playbackState == Player.STATE_BUFFERING || basePlayer.playbackState == Player.STATE_IDLE) {
+                    scheduleStationHealthCheck(basePlayer)
+                }
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
+                    Player.STATE_BUFFERING -> {
+                        if (basePlayer.playWhenReady) {
+                            scheduleStationHealthCheck(basePlayer)
+                        }
+                    }
                     Player.STATE_READY -> {
+                        stationHealthJob?.cancel()
                         consecutiveAutoSkips = 0
                         if (pendingShuffleCue) {
                             pendingShuffleCue = false
@@ -153,15 +180,22 @@ class PlaybackService : MediaSessionService() {
                         }
                     }
                     Player.STATE_ENDED -> {
-                        // Live radio streams should reconnect rather than discard the user's station
-                        basePlayer.seekToDefaultPosition()
-                        basePlayer.prepare()
-                        basePlayer.play()
+                        if (basePlayer.playWhenReady) {
+                            basePlayer.seekToDefaultPosition()
+                            basePlayer.prepare()
+                            basePlayer.play()
+                        }
+                    }
+                    Player.STATE_IDLE -> {
+                        if (basePlayer.playWhenReady) {
+                            scheduleStationHealthCheck(basePlayer)
+                        }
                     }
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                if (!basePlayer.playWhenReady) return
                 if (consecutiveAutoSkips < 1) {
                     consecutiveAutoSkips += 1
                     basePlayer.prepare()
@@ -300,18 +334,22 @@ class PlaybackService : MediaSessionService() {
 
     private fun scheduleStationHealthCheck(player: Player) {
         stationHealthJob?.cancel()
+        // If user manually paused (playWhenReady == false), NEVER run health check or auto-skip!
+        if (!player.playWhenReady) return
+
         stationHealthJob = serviceScope.launch {
             delay(STATION_START_GRACE_MS)
 
-            val stationStillUnhealthy = player.currentMediaItem != null &&
-                (player.playbackState == Player.STATE_BUFFERING ||
-                    player.playbackState == Player.STATE_IDLE ||
-                    !player.isPlaying)
+            // ONLY consider unhealthy if user still wants to play (playWhenReady == true)
+            // AND the stream is stuck buffering or in idle/error state!
+            val stationStuckBuffering = player.playWhenReady &&
+                player.currentMediaItem != null &&
+                (player.playbackState == Player.STATE_BUFFERING || player.playbackState == Player.STATE_IDLE)
 
-            if (stationStillUnhealthy && consecutiveAutoSkips < MAX_AUTO_SKIPS) {
+            if (stationStuckBuffering && consecutiveAutoSkips < MAX_AUTO_SKIPS) {
                 consecutiveAutoSkips += 1
                 shuffleBackground(player, playCue = false)
-            } else if (!stationStillUnhealthy) {
+            } else if (!stationStuckBuffering) {
                 consecutiveAutoSkips = 0
             }
         }
@@ -419,11 +457,39 @@ class PlaybackService : MediaSessionService() {
         metadataProbeJob?.cancel()
         serviceScope.cancel()
         mediaSession?.run {
+            val sessionId = (player as? ExoPlayer)?.audioSessionId ?: 0
+            closeAudioEffectSession(sessionId)
+            EqualizerHelper.release()
             player.release()
             release()
             mediaSession = null
         }
         super.onDestroy()
+    }
+
+    private fun openAudioEffectSession(sessionId: Int) {
+        if (sessionId != 0) {
+            try {
+                val intent = Intent(android.media.audiofx.AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION).apply {
+                    putExtra(android.media.audiofx.AudioEffect.EXTRA_AUDIO_SESSION, sessionId)
+                    putExtra(android.media.audiofx.AudioEffect.EXTRA_PACKAGE_NAME, packageName)
+                    putExtra(android.media.audiofx.AudioEffect.EXTRA_CONTENT_TYPE, android.media.audiofx.AudioEffect.CONTENT_TYPE_MUSIC)
+                }
+                sendBroadcast(intent)
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun closeAudioEffectSession(sessionId: Int) {
+        if (sessionId != 0) {
+            try {
+                val intent = Intent(android.media.audiofx.AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION).apply {
+                    putExtra(android.media.audiofx.AudioEffect.EXTRA_AUDIO_SESSION, sessionId)
+                    putExtra(android.media.audiofx.AudioEffect.EXTRA_PACKAGE_NAME, packageName)
+                }
+                sendBroadcast(intent)
+            } catch (_: Exception) {}
+        }
     }
 
     private fun createNotificationChannel() {

@@ -12,8 +12,8 @@ class FavoritesManager(context: Context) {
     fun getFavorites(): List<ResolvedStation> {
         val json = prefs.getString(KEY_FAVORITES, null) ?: return emptyList()
         return try {
-            val type = object : TypeToken<List<ResolvedStation>>() {}.type
-            gson.fromJson<List<ResolvedStation>>(json, type) ?: emptyList()
+            val array = gson.fromJson(json, Array<ResolvedStation>::class.java)
+            array?.toList() ?: emptyList()
         } catch (_: Exception) {
             emptyList()
         }
@@ -47,8 +47,8 @@ class FavoritesManager(context: Context) {
     fun getRecents(): List<ResolvedStation> {
         val json = prefs.getString(KEY_RECENTS, null) ?: return emptyList()
         return try {
-            val type = object : TypeToken<List<ResolvedStation>>() {}.type
-            gson.fromJson<List<ResolvedStation>>(json, type) ?: emptyList()
+            val array = gson.fromJson(json, Array<ResolvedStation>::class.java)
+            array?.toList() ?: emptyList()
         } catch (_: Exception) {
             emptyList()
         }

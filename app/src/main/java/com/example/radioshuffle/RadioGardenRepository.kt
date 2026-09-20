@@ -79,10 +79,10 @@ data class SearchSource(
 }
 
 data class ResolvedStation(
-    val channelId: String,
-    val title: String,
-    val city: String,
-    val country: String
+    @SerializedName("channelId") val channelId: String,
+    @SerializedName("title") val title: String,
+    @SerializedName("city") val city: String,
+    @SerializedName("country") val country: String
 ) {
     val streamUrl: String
         get() = "https://radio.garden/api/ara/content/listen/$channelId/channel.mp3"

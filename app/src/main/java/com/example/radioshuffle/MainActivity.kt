@@ -12,11 +12,14 @@ import android.app.Application
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -284,7 +287,30 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         controller = mediaController
         mediaController.addListener(playerListener)
 
-        mediaController.currentMediaItem?.mediaMetadata?.let { meta ->
+        mediaController.currentMediaItem?.let { item ->
+            val meta = item.mediaMetadata
+            val channelId = item.mediaId.takeIf { it.isNotBlank() }
+                ?: meta.description?.toString()?.takeIf { it.isNotBlank() }
+
+            if (!channelId.isNullOrBlank()) {
+                val stationTitle = meta.albumTitle?.toString()
+                    ?: meta.extras?.getString("station_title")
+                    ?: meta.title?.toString()
+                    ?: "Radio Station"
+                val location = meta.subtitle?.toString()
+                    ?: meta.artist?.toString()
+                    ?: ""
+                val locParts = location.split(", ")
+                val activeStation = ResolvedStation(
+                    channelId = channelId,
+                    title = stationTitle,
+                    city = locParts.getOrNull(0).orEmpty(),
+                    country = locParts.getOrNull(1).orEmpty()
+                )
+                currentStation = activeStation
+                _isCurrentFavorite.value = favoritesManager.isFavorite(channelId)
+            }
+
             publishPlayingState(
                 metadata = meta,
                 isPlaying = mediaController.isPlaying,
@@ -442,8 +468,20 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleFavorite() {
-        val station = currentStation ?: return
+        val playing = _uiState.value as? RadioUiState.Playing
+        val station = currentStation ?: playing?.let {
+            if (it.channelId.isNotBlank()) {
+                ResolvedStation(
+                    channelId = it.channelId,
+                    title = it.title,
+                    city = it.city,
+                    country = it.country
+                )
+            } else null
+        } ?: return
+
         val newStatus = favoritesManager.toggleFavorite(station)
+        currentStation = station
         _favorites.value = favoritesManager.getFavorites()
         _isCurrentFavorite.value = newStatus
     }
@@ -579,7 +617,14 @@ class MainActivity : ComponentActivity() {
     private var controllerFuture: ListenableFuture<MediaController>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
 
         setContent {
             val context = LocalContext.current
@@ -849,11 +894,11 @@ private fun RadioTabContent(
             }
         }
 
-        // Center Tuner Card: Compact ~200dp, stable height, no blank empty space
+        // Center Tuner Card: Compact ~220dp, stable height, no jumping
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .defaultMinSize(minHeight = 200.dp),
+                .animateContentSize(),
             shape = RoundedCornerShape(24.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
             border = BorderStroke(1.dp, Color(0xFF222B38))
@@ -861,7 +906,7 @@ private fun RadioTabContent(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .defaultMinSize(minHeight = 200.dp)
+                    .defaultMinSize(minHeight = 220.dp)
                     .padding(18.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -1683,16 +1728,19 @@ private fun BottomNavBar(
     currentTab: NavTab,
     onSelectTab: (NavTab) -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color(0xFF141922))
-            .border(BorderStroke(1.dp, Color(0xFF222B38)))
-            .navigationBarsPadding()
-            .height(60.dp),
-        horizontalArrangement = Arrangement.SpaceAround,
-        verticalAlignment = Alignment.CenterVertically
+    Surface(
+        color = Color(0xFF141922),
+        border = BorderStroke(1.dp, Color(0xFF222B38)),
+        modifier = Modifier.fillMaxWidth()
     ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .height(62.dp),
+            horizontalArrangement = Arrangement.SpaceAround,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
         NavTab.values().forEach { tab ->
             val selected = currentTab == tab
             Column(
@@ -1720,6 +1768,7 @@ private fun BottomNavBar(
         }
     }
 }
+}
 
 // ==========================================
 // Settings Bottom Sheet (Hamburger Menu)
@@ -1733,6 +1782,8 @@ private fun SettingsBottomSheet(
     updateState: UpdateUiState,
     onCheckUpdate: () -> Unit
 ) {
+    val context = LocalContext.current
+    var showInAppEqualizer by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     ModalBottomSheet(
@@ -1832,7 +1883,77 @@ private fun SettingsBottomSheet(
             // Divider
             Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF222B38)))
 
-            // 2. App Updates
+            // 2. Audio Equalizer
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_equalizer),
+                            contentDescription = null,
+                            tint = Color(0xFF00E676),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Audio Equalizer",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Text(
+                        text = "Native Effect",
+                        color = Color(0xFF00E676),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        val opened = EqualizerHelper.openDeviceSystemEqualizer(context)
+                        if (!opened) {
+                            showInAppEqualizer = true
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(42.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF1B2330),
+                        contentColor = Color.White
+                    ),
+                    border = BorderStroke(1.dp, Color(0xFF2E3D52))
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_equalizer),
+                            contentDescription = null,
+                            tint = Color(0xFF00E676),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Open Device Equalizer",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+
+            // Divider
+            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF222B38)))
+
+            // 3. App Updates
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
@@ -1885,7 +2006,7 @@ private fun RadioStatus(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .defaultMinSize(minHeight = 165.dp),
+                .defaultMinSize(minHeight = 185.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
@@ -2021,38 +2142,72 @@ private fun RadioStatus(
                         )
                     }
 
-                    if (!current.currentTrack.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Card(
-                            shape = RoundedCornerShape(10.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF1B2330)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 4.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Fixed-height Now Playing Slot (Eliminates vertical jumping/resizing)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(34.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val track = current.currentTrack
+                        if (!track.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(17.dp),
+                                color = Color(0xFF19222E),
+                                border = BorderStroke(1.dp, Color(0xFF2B3A4C)),
+                                modifier = Modifier.fillMaxWidth(0.92f)
                             ) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_music_note),
-                                    contentDescription = null,
-                                    tint = Color(0xFF00E676),
-                                    modifier = Modifier.size(14.dp)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.ic_music_note),
+                                        contentDescription = "Now Playing",
+                                        tint = Color(0xFF00E676),
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = track,
+                                        color = Color(0xFFE2E9F0),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        modifier = Modifier.basicMarquee()
+                                    )
+                                }
+                            }
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                                modifier = Modifier.padding(vertical = 6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(4.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF4C5B6E))
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = current.currentTrack,
-                                    color = Color(0xFFE0E6ED),
-                                    fontSize = 12.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    text = if (current.isBuffering) "Connecting stream..." else "Live Broadcast",
+                                    color = Color(0xFF6E7D91),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Normal,
+                                    letterSpacing = 0.5.sp
                                 )
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     Box(
                         modifier = Modifier.size(56.dp),
