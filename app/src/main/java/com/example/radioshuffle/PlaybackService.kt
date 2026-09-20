@@ -126,6 +126,7 @@ class PlaybackService : MediaSessionService() {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 currentTrackTitle = null
                 metadataProbeJob?.cancel()
+                basePlayer.playlistMetadata = mediaItem?.mediaMetadata ?: MediaMetadata.EMPTY
                 if (mediaItem != null) {
                     scheduleStationHealthCheck(basePlayer)
                     scheduleMetadataProbe(basePlayer, mediaItem)
@@ -248,7 +249,9 @@ class PlaybackService : MediaSessionService() {
             }
         }
 
-        val intent = Intent(this, MainActivity::class.java)
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
         val pendingIntent = PendingIntent.getActivity(
             this, 0, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -387,16 +390,6 @@ class PlaybackService : MediaSessionService() {
             .setExtras(updatedExtras)
             .build()
 
-        val updatedItem = currentItem.buildUpon()
-            .setMediaMetadata(updatedMetadata)
-            .build()
-
-        try {
-            if (player.currentMediaItemIndex >= 0) {
-                player.replaceMediaItem(player.currentMediaItemIndex, updatedItem)
-            }
-        } catch (_: Exception) {
-        }
         player.playlistMetadata = updatedMetadata
     }
 

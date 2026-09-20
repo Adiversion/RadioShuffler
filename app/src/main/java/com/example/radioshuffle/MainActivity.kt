@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.app.Application
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -107,10 +108,10 @@ import kotlinx.coroutines.withContext
 
 object RadioTokens {
     object Colors {
-        val Background = Color(0xFF0C0F14)
-        val CardSurface = Color(0xFF141922)
-        val CardElevated = Color(0xFF1B2330)
-        val Border = Color(0xFF222B38)
+        val Background = Color(0xFF000000) // 100% True Pixel-Off AMOLED Black
+        val CardSurface = Color(0xFF0E131A) // Deep OLED Card Surface
+        val CardElevated = Color(0xFF161C24) // Elevated Surface
+        val Border = Color(0xFF222B38) // Crisp OLED Border
         val BorderSubtle = Color(0xFF2E3D52)
         val Accent = Color(0xFF00E676)
         val TextPrimary = Color(0xFFFFFFFF)
@@ -339,16 +340,22 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
 
         mediaController.currentMediaItem?.let { item ->
             val meta = item.mediaMetadata
+            val playlistMeta = mediaController.playlistMetadata
             val channelId = item.mediaId.takeIf { it.isNotBlank() }
                 ?: meta.description?.toString()?.takeIf { it.isNotBlank() }
+                ?: playlistMeta.description?.toString()?.takeIf { it.isNotBlank() }
+
+            val stationTitle = meta.albumTitle?.toString()
+                ?: meta.extras?.getString("station_title")
+                ?: playlistMeta.albumTitle?.toString()
+                ?: playlistMeta.extras?.getString("station_title")
+                ?: meta.title?.toString()
+                ?: "Radio Station"
 
             if (!channelId.isNullOrBlank()) {
-                val stationTitle = meta.albumTitle?.toString()
-                    ?: meta.extras?.getString("station_title")
-                    ?: meta.title?.toString()
-                    ?: "Radio Station"
                 val location = meta.subtitle?.toString()
                     ?: meta.artist?.toString()
+                    ?: playlistMeta.subtitle?.toString()
                     ?: ""
                 val locParts = location.split(", ")
                 val activeStation = ResolvedStation(
@@ -361,10 +368,26 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                 _isCurrentFavorite.value = favoritesManager.isFavorite(channelId)
             }
 
+            val combinedMeta = mediaController.mediaMetadata
+            val explicitTrack = combinedMeta.extras?.getString("track_title")
+                ?: playlistMeta.extras?.getString("track_title")
+                ?: meta.extras?.getString("track_title")
+
+            val combinedTitle = combinedMeta.title?.toString()
+            val playlistTitle = playlistMeta.title?.toString()
+
+            val initialTrack = when {
+                !explicitTrack.isNullOrBlank() && !explicitTrack.equals(stationTitle, ignoreCase = true) -> explicitTrack
+                !combinedTitle.isNullOrBlank() && !combinedTitle.equals(stationTitle, ignoreCase = true) -> combinedTitle
+                !playlistTitle.isNullOrBlank() && !playlistTitle.equals(stationTitle, ignoreCase = true) -> playlistTitle
+                else -> null
+            }
+
             publishPlayingState(
                 metadata = meta,
                 isPlaying = mediaController.isPlaying,
-                isBuffering = mediaController.playbackState == Player.STATE_BUFFERING && !mediaController.isPlaying
+                isBuffering = mediaController.playbackState == Player.STATE_BUFFERING && !mediaController.isPlaying,
+                trackTitle = initialTrack
             )
         }
     }
@@ -617,6 +640,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
             player.stop()
             player.clearMediaItems()
             player.setMediaItem(mediaItem)
+            player.playlistMetadata = metadataBuilder.build()
             player.prepare()
             player.play()
         }
@@ -653,11 +677,32 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
 
         val effectiveBuffering = isBuffering && !isPlaying
 
+        val resolvedTrack = trackTitle ?: run {
+            val combinedMeta = controller?.mediaMetadata
+            val playlistMeta = controller?.playlistMetadata
+            val currentMeta = controller?.currentMediaItem?.mediaMetadata
+            val explicit = metadata.extras?.getString("track_title")
+                ?: playlistMeta?.extras?.getString("track_title")
+                ?: combinedMeta?.extras?.getString("track_title")
+                ?: currentMeta?.extras?.getString("track_title")
+            val combinedTitle = combinedMeta?.title?.toString()
+            val playlistTitle = playlistMeta?.title?.toString()
+            val raw = metadata.title?.toString()
+                ?: currentMeta?.title?.toString()
+            when {
+                !explicit.isNullOrBlank() && !explicit.equals(stationTitle, ignoreCase = true) -> explicit
+                !combinedTitle.isNullOrBlank() && !combinedTitle.equals(stationTitle, ignoreCase = true) -> combinedTitle
+                !playlistTitle.isNullOrBlank() && !playlistTitle.equals(stationTitle, ignoreCase = true) -> playlistTitle
+                !raw.isNullOrBlank() && !raw.equals(stationTitle, ignoreCase = true) -> raw
+                else -> null
+            }
+        }
+
         _uiState.value = RadioUiState.Playing(
             title = stationTitle,
             city = city,
             country = country,
-            currentTrack = trackTitle,
+            currentTrack = resolvedTrack,
             isPlaying = isPlaying,
             isBuffering = effectiveBuffering,
             channelId = channelId
@@ -706,11 +751,16 @@ class MainActivity : ComponentActivity() {
 
             Surface(
                 modifier = Modifier.fillMaxSize(),
-                color = Color(0xFF0C0F14)
+                color = RadioTokens.Colors.Background
             ) {
                 ModernRadioScreen(viewModel)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
     }
 
     override fun onDestroy() {
@@ -736,6 +786,10 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
     var currentTab by remember { mutableStateOf(NavTab.RADIO) }
     var showSettingsSheet by remember { mutableStateOf(false) }
 
+    BackHandler(enabled = currentTab != NavTab.RADIO) {
+        currentTab = NavTab.RADIO
+    }
+
     val currentChannelId = (state as? RadioUiState.Playing)?.channelId
 
     Scaffold(
@@ -743,7 +797,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFF0C0F14))
+                    .background(RadioTokens.Colors.Background)
             ) {
                 // Persistent Mini-Player Bar (visible on Search and Library tabs during playback)
                 if (currentTab != NavTab.RADIO && (state is RadioUiState.Playing || state is RadioUiState.Loading)) {
@@ -763,58 +817,64 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                 )
             }
         },
-        containerColor = Color(0xFF0C0F14)
+        containerColor = RadioTokens.Colors.Background
     ) { innerPadding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            when (currentTab) {
-                NavTab.RADIO -> {
-                    RadioTabContent(
-                        state = state,
-                        activeQuery = activeQuery,
-                        isFavorite = isFavorite,
-                        onToggleFavorite = viewModel::toggleFavorite,
-                        onTogglePlayPause = viewModel::togglePlayPause,
-                        onShuffle = { query -> viewModel.shuffle(query) },
-                        onShuffleWorldwide = { viewModel.shuffleWorldwide() },
-                        onOpenSettings = { showSettingsSheet = true }
-                    )
-                }
-                NavTab.SEARCH -> {
-                    SearchTabContent(
-                        isSearching = isSearching,
-                        searchResults = searchResults,
-                        currentChannelId = currentChannelId,
-                        onSearch = { query -> viewModel.searchStations(query) },
-                        onShuffleQuery = { query ->
-                            viewModel.shuffle(query)
-                            currentTab = NavTab.RADIO
-                        },
-                        onPlayStation = { station ->
-                            viewModel.playSpecificStation(station, query = activeQuery)
-                            currentTab = NavTab.RADIO
-                        },
-                        onClearSearch = { viewModel.clearSearchResults() },
-                        onToggleFavorite = { viewModel.toggleFavoriteStation(it) },
-                        isFavorite = { channelId -> favorites.any { it.channelId == channelId } }
-                    )
-                }
-                NavTab.LIBRARY -> {
-                    LibraryTabContent(
-                        favorites = favorites,
-                        recents = recents,
-                        currentChannelId = currentChannelId,
-                        onPlayStation = { station ->
-                            viewModel.playSpecificStation(station)
-                            currentTab = NavTab.RADIO
-                        },
-                        onRemoveFavorite = { viewModel.removeFavorite(it.channelId) },
-                        onToggleFavorite = { viewModel.toggleFavoriteStation(it) },
-                        isFavorite = { channelId -> favorites.any { it.channelId == channelId } }
-                    )
+            Crossfade(
+                targetState = currentTab,
+                animationSpec = tween(durationMillis = 180),
+                label = "NavTabCrossfade"
+            ) { tab ->
+                when (tab) {
+                    NavTab.RADIO -> {
+                        RadioTabContent(
+                            state = state,
+                            activeQuery = activeQuery,
+                            isFavorite = isFavorite,
+                            onToggleFavorite = viewModel::toggleFavorite,
+                            onTogglePlayPause = viewModel::togglePlayPause,
+                            onShuffle = { query -> viewModel.shuffle(query) },
+                            onShuffleWorldwide = { viewModel.shuffleWorldwide() },
+                            onOpenSettings = { showSettingsSheet = true }
+                        )
+                    }
+                    NavTab.SEARCH -> {
+                        SearchTabContent(
+                            isSearching = isSearching,
+                            searchResults = searchResults,
+                            currentChannelId = currentChannelId,
+                            onSearch = { query -> viewModel.searchStations(query) },
+                            onShuffleQuery = { query ->
+                                viewModel.shuffle(query)
+                                currentTab = NavTab.RADIO
+                            },
+                            onPlayStation = { station ->
+                                viewModel.playSpecificStation(station, query = activeQuery)
+                                currentTab = NavTab.RADIO
+                            },
+                            onClearSearch = { viewModel.clearSearchResults() },
+                            onToggleFavorite = { viewModel.toggleFavoriteStation(it) },
+                            isFavorite = { channelId -> favorites.any { it.channelId == channelId } }
+                        )
+                    }
+                    NavTab.LIBRARY -> {
+                        LibraryTabContent(
+                            favorites = favorites,
+                            recents = recents,
+                            currentChannelId = currentChannelId,
+                            onPlayStation = { station ->
+                                viewModel.playSpecificStation(station)
+                                currentTab = NavTab.RADIO
+                            },
+                            onRemoveFavorite = { viewModel.removeFavorite(it.channelId) },
+                            onToggleFavorite = { viewModel.toggleFavoriteStation(it) },
+                            isFavorite = { channelId -> favorites.any { it.channelId == channelId } }
+                        )
+                    }
                 }
             }
         }
@@ -952,8 +1012,8 @@ private fun RadioTabContent(
                 .fillMaxWidth()
                 .animateContentSize(),
             shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-            border = BorderStroke(1.dp, Color(0xFF222B38))
+            colors = CardDefaults.cardColors(containerColor = RadioTokens.Colors.CardSurface),
+            border = BorderStroke(1.dp, RadioTokens.Colors.Border)
         ) {
             Box(
                 modifier = Modifier
@@ -1040,10 +1100,10 @@ private fun RadioTabContent(
                         onClick = { onShuffle(genre) },
                         shape = RoundedCornerShape(18.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = if (isSelected) Color(0x2600E676) else Color(0xFF141922),
+                            containerColor = if (isSelected) Color(0x2600E676) else RadioTokens.Colors.CardSurface,
                             contentColor = if (isSelected) Color(0xFF00E676) else Color.White
                         ),
-                        border = BorderStroke(1.dp, if (isSelected) Color(0xFF00E676) else Color(0xFF222B38)),
+                        border = BorderStroke(1.dp, if (isSelected) Color(0xFF00E676) else RadioTokens.Colors.Border),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                     ) {
                         Text(text = genre, fontSize = 12.sp, fontWeight = FontWeight.Medium)
@@ -1222,8 +1282,8 @@ private fun SearchTabContent(
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-                        border = BorderStroke(1.dp, Color(0xFF222B38))
+                        colors = CardDefaults.cardColors(containerColor = RadioTokens.Colors.CardSurface),
+                        border = BorderStroke(1.dp, RadioTokens.Colors.Border)
                     ) {
                         Row(
                             modifier = Modifier
@@ -1390,8 +1450,8 @@ private fun SearchTabContent(
                                             onShuffleQuery(tag)
                                         },
                                     shape = RoundedCornerShape(14.dp),
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-                                    border = BorderStroke(1.dp, Color(0xFF222B38))
+                                    colors = CardDefaults.cardColors(containerColor = RadioTokens.Colors.CardSurface),
+                                    border = BorderStroke(1.dp, RadioTokens.Colors.Border)
                                 ) {
                                     Row(
                                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
@@ -1455,8 +1515,8 @@ private fun LibraryTabContent(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFF141922), RoundedCornerShape(14.dp))
-                .border(BorderStroke(1.dp, Color(0xFF222B38)), RoundedCornerShape(14.dp))
+                .background(RadioTokens.Colors.CardSurface, RoundedCornerShape(14.dp))
+                .border(BorderStroke(1.dp, RadioTokens.Colors.Border), RoundedCornerShape(14.dp))
                 .padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -1609,11 +1669,11 @@ private fun StationItemRow(
             .clickable(onClick = onPlay),
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (isCurrent) Color(0xFF15261D) else Color(0xFF141922)
+            containerColor = if (isCurrent) Color(0xFF15261D) else RadioTokens.Colors.CardSurface
         ),
         border = BorderStroke(
             1.dp,
-            if (isCurrent) Color(0xFF00E676) else Color(0xFF222B38)
+            if (isCurrent) Color(0xFF00E676) else RadioTokens.Colors.Border
         )
     ) {
         Row(
@@ -1846,7 +1906,7 @@ private fun SettingsBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = Color(0xFF141922),
+        containerColor = RadioTokens.Colors.CardSurface,
         contentColor = Color.White,
         dragHandle = null,
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
@@ -1982,10 +2042,10 @@ private fun SettingsBottomSheet(
                         .height(42.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF1B2330),
+                        containerColor = RadioTokens.Colors.CardElevated,
                         contentColor = Color.White
                     ),
-                    border = BorderStroke(1.dp, Color(0xFF2E3D52))
+                    border = BorderStroke(1.dp, RadioTokens.Colors.Border)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -2371,12 +2431,12 @@ private fun UpdateControls(
                 .height(48.dp),
             shape = RoundedCornerShape(24.dp),
             colors = ButtonDefaults.outlinedButtonColors(
-                containerColor = Color(0xFF1B2330),
+                containerColor = RadioTokens.Colors.CardElevated,
                 contentColor = Color.White,
-                disabledContainerColor = Color(0xFF18202B),
+                disabledContainerColor = RadioTokens.Colors.CardSurface,
                 disabledContentColor = Color.White
             ),
-            border = BorderStroke(1.dp, Color(0xFF2C394B))
+            border = BorderStroke(1.dp, RadioTokens.Colors.Border)
         ) {
             if (updateState is UpdateUiState.Checking) {
                 CircularProgressIndicator(
