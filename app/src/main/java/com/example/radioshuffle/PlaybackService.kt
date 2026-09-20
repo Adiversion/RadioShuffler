@@ -353,8 +353,11 @@ class PlaybackService : MediaSessionService() {
             .setMediaMetadata(updatedMetadata)
             .build()
 
-        if (player.currentMediaItemIndex >= 0) {
-            player.replaceMediaItem(player.currentMediaItemIndex, updatedItem)
+        try {
+            if (player.currentMediaItemIndex >= 0) {
+                player.replaceMediaItem(player.currentMediaItemIndex, updatedItem)
+            }
+        } catch (_: Exception) {
         }
         player.playlistMetadata = updatedMetadata
     }
