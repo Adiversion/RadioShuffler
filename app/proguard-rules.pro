@@ -20,9 +20,26 @@
 }
 -keep class com.google.gson.** { *; }
 
-# Keep all data models and services in our app package from obfuscation or stripping
--keep class com.example.radioshuffle.** { *; }
--keepclassmembers class com.example.radioshuffle.** { *; }
+# Keep Retrofit API and Gson data models from obfuscation or field stripping
+-keep class com.example.radioshuffle.*Envelope { *; }
+-keep class com.example.radioshuffle.*Data { *; }
+-keep class com.example.radioshuffle.*Record { *; }
+-keep class com.example.radioshuffle.*Block { *; }
+-keep class com.example.radioshuffle.*Wrapper { *; }
+-keep class com.example.radioshuffle.*Details { *; }
+-keep class com.example.radioshuffle.*Info { *; }
+-keep class com.example.radioshuffle.*Hits { *; }
+-keep class com.example.radioshuffle.*Hit { *; }
+-keep class com.example.radioshuffle.*Source { *; }
+-keep class com.example.radioshuffle.ResolvedStation { *; }
+-keep class com.example.radioshuffle.RadioGardenService { *; }
+
+# Strip verbose/debug logs in release builds for performance and battery
+-assumenosideeffects class android.util.Log {
+    public static boolean isLoggable(java.lang.String, int);
+    public static int v(...);
+    public static int d(...);
+}
 
 # OkHttp & Okio
 -dontwarn okhttp3.**
