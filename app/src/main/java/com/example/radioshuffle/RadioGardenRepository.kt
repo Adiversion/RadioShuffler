@@ -256,6 +256,56 @@ class RadioGardenRepository(
         return gathered.distinctBy { it.channelId }
     }
 
+    suspend fun getStationsForCity(city: String, country: String): List<ResolvedStation> {
+        val cleanedCity = city.trim()
+        if (cleanedCity.isBlank()) return emptyList()
+
+        val places = getPlaces()
+        val matchingPlace = places.firstOrNull {
+            it.title.equals(cleanedCity, ignoreCase = true) &&
+                (country.isBlank() || it.country.equals(country.trim(), ignoreCase = true))
+        } ?: places.firstOrNull {
+            it.title.equals(cleanedCity, ignoreCase = true)
+        }
+
+        if (matchingPlace != null) {
+            val localStations = fetchStationsForPlace(matchingPlace)
+            if (localStations.isNotEmpty()) {
+                return localStations.distinctBy { it.channelId }
+            }
+        }
+
+        return searchStations(cleanedCity)
+    }
+
+    suspend fun getStationsForCountry(country: String): List<ResolvedStation> {
+        val cleanedCountry = country.trim()
+        if (cleanedCountry.isBlank()) return emptyList()
+
+        val placesByCountry = getPlacesByCountry()
+        val countryPlaces = placesByCountry[cleanedCountry] ?: placesByCountry.entries.firstOrNull {
+            it.key.equals(cleanedCountry, ignoreCase = true)
+        }?.value
+
+        if (!countryPlaces.isNullOrEmpty()) {
+            val topPlaces = countryPlaces.sortedByDescending { (it.size ?: 0) + (if (it.boost == true) 10 else 0) }.take(8)
+            val gathered = mutableListOf<ResolvedStation>()
+            val seenIds = mutableSetOf<String>()
+            for (place in topPlaces) {
+                val stations = fetchStationsForPlace(place)
+                for (st in stations) {
+                    if (seenIds.add(st.channelId)) {
+                        gathered.add(st)
+                    }
+                }
+                if (gathered.size >= 35) break
+            }
+            if (gathered.isNotEmpty()) return gathered
+        }
+
+        return searchStations(cleanedCountry)
+    }
+
     private suspend fun nextShuffledStation(): ResolvedStation {
         // 1. Instant pop from prefetch queue, strictly preferring a different country from the last played station
         val candidate = poolMutex.withLock {

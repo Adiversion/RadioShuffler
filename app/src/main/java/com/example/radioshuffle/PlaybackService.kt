@@ -125,7 +125,15 @@ class PlaybackService : MediaSessionService() {
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
+                val newChannelId = mediaItem?.mediaId?.takeIf { it.isNotBlank() }
+                    ?: mediaItem?.mediaMetadata?.description?.toString()?.takeIf { it.isNotBlank() }
+
+                // Only ignore if this is an in-place metadata update for the exact same active station
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED &&
+                    newChannelId != null &&
+                    newChannelId == currentStation?.channelId &&
+                    currentTrackTitle != null
+                ) {
                     return
                 }
                 currentTrackTitle = null

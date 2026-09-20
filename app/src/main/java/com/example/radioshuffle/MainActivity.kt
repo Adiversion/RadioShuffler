@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -102,6 +103,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -171,6 +173,21 @@ sealed class UpdateUiState {
     data class Error(val message: String) : UpdateUiState()
 }
 
+enum class LocationExplorerTab {
+    CITY,
+    COUNTRY
+}
+
+data class LocationExplorerState(
+    val city: String,
+    val country: String,
+    val selectedTab: LocationExplorerTab = LocationExplorerTab.CITY,
+    val isLoading: Boolean = false,
+    val cityStations: List<ResolvedStation> = emptyList(),
+    val countryStations: List<ResolvedStation> = emptyList(),
+    val errorMessage: String? = null
+)
+
 class RadioViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = RadioGardenRepository()
     private val favoritesManager = FavoritesManager(application)
@@ -179,6 +196,7 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
     private var searchJob: Job? = null
     private var sleepTimerJob: Job? = null
     private var updateJob: Job? = null
+    private var locationExploreJob: Job? = null
     private var lastQuery: String? = null
     private var currentStation: ResolvedStation? = null
 
@@ -209,6 +227,9 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
     private val _updateState = MutableStateFlow<UpdateUiState>(UpdateUiState.Idle)
     val updateState: StateFlow<UpdateUiState> = _updateState
 
+    private val _locationExplorerState = MutableStateFlow<LocationExplorerState?>(null)
+    val locationExplorerState: StateFlow<LocationExplorerState?> = _locationExplorerState
+
     private val playerListener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
             val current = _uiState.value
@@ -228,6 +249,14 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                     isPlaying = isPlaying,
                     isBuffering = isBuffering
                 )
+            } else if (isPlaying) {
+                val currentItem = controller?.currentMediaItem
+                val meta = currentItem?.mediaMetadata ?: controller?.playlistMetadata
+                if (meta != null) {
+                    syncStationFromMediaItem(currentItem)
+                    val isBuffering = (controller?.playbackState == Player.STATE_BUFFERING) && !isPlaying
+                    publishPlayingState(meta, isPlaying = true, isBuffering = isBuffering)
+                }
             }
         }
 
@@ -239,14 +268,22 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
                 )
             ) {
                 val current = _uiState.value
+                val isPlaying = player.isPlaying
+                val isBuffering = player.playbackState == Player.STATE_BUFFERING && !isPlaying
+
                 if (current is RadioUiState.Playing) {
-                    val isPlaying = player.isPlaying
-                    val isBuffering = player.playbackState == Player.STATE_BUFFERING && !isPlaying
                     if (current.isPlaying != isPlaying || current.isBuffering != isBuffering) {
                         _uiState.value = current.copy(
                             isPlaying = isPlaying,
                             isBuffering = isBuffering
                         )
+                    }
+                } else if (isPlaying) {
+                    val currentItem = player.currentMediaItem
+                    val meta = currentItem?.mediaMetadata ?: player.playlistMetadata
+                    if (meta != null) {
+                        syncStationFromMediaItem(currentItem)
+                        publishPlayingState(meta, isPlaying = true, isBuffering = false)
                     }
                 }
             }
@@ -261,39 +298,27 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
-                val meta = mediaItem?.mediaMetadata ?: return
-                applyMetadataUpdate(meta)
-                return
-            }
             val meta = mediaItem?.mediaMetadata
             val channelId = mediaItem?.mediaId?.takeIf { it.isNotBlank() }
                 ?: meta?.description?.toString()?.takeIf { it.isNotBlank() }
 
+            val isSameStation = channelId != null && channelId == currentStation?.channelId
+            val isAlreadyPlaying = _uiState.value is RadioUiState.Playing
+
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED && isSameStation && isAlreadyPlaying) {
+                if (meta != null) {
+                    applyMetadataUpdate(meta)
+                }
+                return
+            }
+
             if (meta != null) {
+                syncStationFromMediaItem(mediaItem)
+
                 val stationTitle = meta.albumTitle?.toString()
                     ?: meta.extras?.getString("station_title")
                     ?: meta.title?.toString()
                     ?: "Radio Station"
-                val location = meta.subtitle?.toString()
-                    ?: meta.artist?.toString()
-                    ?: ""
-                val locParts = location.split(", ")
-                val city = locParts.getOrNull(0).orEmpty()
-                val country = locParts.getOrNull(1).orEmpty()
-
-                if (!channelId.isNullOrBlank()) {
-                    val activeStation = ResolvedStation(
-                        channelId = channelId,
-                        title = stationTitle,
-                        city = city,
-                        country = country
-                    )
-                    currentStation = activeStation
-                    favoritesManager.addRecent(activeStation)
-                    _recents.value = favoritesManager.getRecents()
-                    _isCurrentFavorite.value = favoritesManager.isFavorite(channelId)
-                }
 
                 val explicitTrack = meta.extras?.getString("track_title")
                 val rawTitle = meta.title?.toString()
@@ -314,14 +339,43 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun syncStationFromMediaItem(mediaItem: MediaItem?) {
+        val meta = mediaItem?.mediaMetadata ?: return
+        val channelId = mediaItem.mediaId?.takeIf { it.isNotBlank() }
+            ?: meta.description?.toString()?.takeIf { it.isNotBlank() }
+            ?: return
+
+        val stationTitle = meta.albumTitle?.toString()
+            ?: meta.extras?.getString("station_title")
+            ?: meta.title?.toString()
+            ?: "Radio Station"
+        val location = meta.subtitle?.toString()
+            ?: meta.artist?.toString()
+            ?: ""
+        val locParts = location.split(", ")
+        val city = locParts.getOrNull(0).orEmpty()
+        val country = locParts.getOrNull(1).orEmpty()
+
+        val activeStation = ResolvedStation(
+            channelId = channelId,
+            title = stationTitle,
+            city = city,
+            country = country
+        )
+        currentStation = activeStation
+        favoritesManager.addRecent(activeStation)
+        _recents.value = favoritesManager.getRecents()
+        _isCurrentFavorite.value = favoritesManager.isFavorite(channelId)
+    }
+
     private fun applyMetadataUpdate(mediaMetadata: MediaMetadata) {
         val current = _uiState.value
-        if (current !is RadioUiState.Playing) return
 
         val stationName = mediaMetadata.albumTitle?.toString()
             ?: mediaMetadata.extras?.getString("station_title")
             ?: currentStation?.title
-            ?: current.title
+            ?: (current as? RadioUiState.Playing)?.title
+            ?: "Radio Station"
 
         val explicitTrack = mediaMetadata.extras?.getString("track_title")
         val rawTitle = mediaMetadata.title?.toString()
@@ -329,13 +383,18 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         val detectedTrack = when {
             !explicitTrack.isNullOrBlank() && !explicitTrack.equals(stationName, ignoreCase = true) -> explicitTrack
             !rawTitle.isNullOrBlank() && !rawTitle.equals(stationName, ignoreCase = true) -> rawTitle
-            else -> current.currentTrack
+            else -> (current as? RadioUiState.Playing)?.currentTrack
         }
 
-        _uiState.value = current.copy(
-            title = stationName,
-            currentTrack = detectedTrack
-        )
+        if (current is RadioUiState.Playing) {
+            _uiState.value = current.copy(
+                title = stationName,
+                currentTrack = detectedTrack
+            )
+        } else if (controller?.isPlaying == true) {
+            syncStationFromMediaItem(controller?.currentMediaItem)
+            publishPlayingState(mediaMetadata, isPlaying = true, isBuffering = false, trackTitle = detectedTrack)
+        }
     }
 
     fun setController(mediaController: MediaController) {
@@ -600,6 +659,56 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun openLocationExplorer(city: String, country: String) {
+        val cleanCity = city.trim()
+        val cleanCountry = country.trim()
+        if (cleanCity.isBlank() && cleanCountry.isBlank()) return
+
+        val initialTab = if (cleanCity.isNotBlank()) LocationExplorerTab.CITY else LocationExplorerTab.COUNTRY
+        _locationExplorerState.value = LocationExplorerState(
+            city = cleanCity.ifBlank { "Local City" },
+            country = cleanCountry.ifBlank { "Worldwide" },
+            selectedTab = initialTab,
+            isLoading = true
+        )
+
+        locationExploreJob?.cancel()
+        locationExploreJob = viewModelScope.launch {
+            try {
+                val cityDeferred = async(Dispatchers.IO) {
+                    if (cleanCity.isNotBlank()) repository.getStationsForCity(cleanCity, cleanCountry) else emptyList()
+                }
+                val countryDeferred = async(Dispatchers.IO) {
+                    if (cleanCountry.isNotBlank()) repository.getStationsForCountry(cleanCountry) else emptyList()
+                }
+
+                val cityRes = cityDeferred.await()
+                val countryRes = countryDeferred.await()
+
+                _locationExplorerState.value = _locationExplorerState.value?.copy(
+                    isLoading = false,
+                    cityStations = cityRes,
+                    countryStations = countryRes,
+                    errorMessage = if (cityRes.isEmpty() && countryRes.isEmpty()) "No radio stations found for this location." else null
+                )
+            } catch (e: Exception) {
+                _locationExplorerState.value = _locationExplorerState.value?.copy(
+                    isLoading = false,
+                    errorMessage = "Could not load stations: ${e.localizedMessage ?: "Unknown error"}"
+                )
+            }
+        }
+    }
+
+    fun closeLocationExplorer() {
+        locationExploreJob?.cancel()
+        _locationExplorerState.value = null
+    }
+
+    fun switchLocationTab(tab: LocationExplorerTab) {
+        _locationExplorerState.value = _locationExplorerState.value?.copy(selectedTab = tab)
+    }
+
     override fun onCleared() {
         controller?.removeListener(playerListener)
         super.onCleared()
@@ -797,6 +906,7 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
     val isFavorite by viewModel.isCurrentFavorite.collectAsStateWithLifecycle()
     val sleepTimerMinutes by viewModel.sleepTimerMinutes.collectAsStateWithLifecycle()
     val updateState by viewModel.updateState.collectAsStateWithLifecycle()
+    val locationExplorerState by viewModel.locationExplorerState.collectAsStateWithLifecycle()
 
     var currentTab by remember { mutableStateOf(NavTab.RADIO) }
     var showSettingsSheet by remember { mutableStateOf(false) }
@@ -854,7 +964,8 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
                             onTogglePlayPause = viewModel::togglePlayPause,
                             onShuffle = { query -> viewModel.shuffle(query) },
                             onShuffleWorldwide = { viewModel.shuffleWorldwide() },
-                            onOpenSettings = { showSettingsSheet = true }
+                            onOpenSettings = { showSettingsSheet = true },
+                            onOpenLocationExplorer = { city, country -> viewModel.openLocationExplorer(city, country) }
                         )
                     }
                     NavTab.SEARCH -> {
@@ -905,6 +1016,25 @@ fun ModernRadioScreen(viewModel: RadioViewModel) {
             onCheckUpdate = { viewModel.updateFromGithub(context) }
         )
     }
+
+    // Location Explorer Bottom Sheet
+    locationExplorerState?.let { locState ->
+        LocationExplorerBottomSheet(
+            state = locState,
+            currentChannelId = currentChannelId,
+            onDismiss = viewModel::closeLocationExplorer,
+            onSelectTab = viewModel::switchLocationTab,
+            onPlayStation = { station ->
+                viewModel.playSpecificStation(station, query = null)
+            },
+            onShuffleArea = { query ->
+                viewModel.shuffle(query)
+                viewModel.closeLocationExplorer()
+            },
+            onToggleFavorite = { viewModel.toggleFavoriteStation(it) },
+            isFavorite = { channelId -> favorites.any { it.channelId == channelId } }
+        )
+    }
 }
 
 // ==========================================
@@ -919,7 +1049,8 @@ private fun RadioTabContent(
     onTogglePlayPause: () -> Unit,
     onShuffle: (String?) -> Unit,
     onShuffleWorldwide: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onOpenLocationExplorer: (String, String) -> Unit
 ) {
     val quickGenres = remember {
         listOf("India", "Jazz", "Lo-Fi", "Rock", "Classical", "Electronic", "Ambient", "News")
@@ -1041,7 +1172,12 @@ private fun RadioTabContent(
                     state = state,
                     isFavorite = isFavorite,
                     onToggleFavorite = onToggleFavorite,
-                    onTogglePlayPause = onTogglePlayPause
+                    onTogglePlayPause = onTogglePlayPause,
+                    onLocationClick = {
+                        if (state is RadioUiState.Playing) {
+                            onOpenLocationExplorer(state.city, state.country)
+                        }
+                    }
                 )
             }
         }
@@ -2134,7 +2270,8 @@ private fun RadioStatus(
     state: RadioUiState,
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit,
-    onTogglePlayPause: () -> Unit
+    onTogglePlayPause: () -> Unit,
+    onLocationClick: () -> Unit
 ) {
     val playButtonBrush = remember {
         Brush.verticalGradient(
@@ -2267,23 +2404,36 @@ private fun RadioStatus(
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(Color(0xFF141C25))
+                            .border(BorderStroke(1.dp, Color(0xFF223040)), RoundedCornerShape(18.dp))
+                            .clickable(onClick = onLocationClick)
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
                     ) {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_location),
-                            contentDescription = null,
+                            contentDescription = "Explore area stations",
                             tint = Color(0xFF00E676),
                             modifier = Modifier.size(14.dp)
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = "${current.city}, ${current.country}",
                             color = Color(0xFF00E676),
                             fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
+                            fontWeight = FontWeight.SemiBold,
                             textAlign = TextAlign.Center,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_search),
+                            contentDescription = null,
+                            tint = Color(0xFF8E9BAE),
+                            modifier = Modifier.size(12.dp)
                         )
                     }
 
@@ -2611,6 +2761,280 @@ private fun UpdateControls(
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
+            }
+        }
+    }
+}
+
+// ==========================================
+// Location Explorer Bottom Sheet
+// ==========================================
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LocationExplorerBottomSheet(
+    state: LocationExplorerState,
+    currentChannelId: String?,
+    onDismiss: () -> Unit,
+    onSelectTab: (LocationExplorerTab) -> Unit,
+    onPlayStation: (ResolvedStation) -> Unit,
+    onShuffleArea: (String) -> Unit,
+    onToggleFavorite: (ResolvedStation) -> Unit,
+    isFavorite: (String) -> Boolean
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val activeTargetName = if (state.selectedTab == LocationExplorerTab.CITY) state.city else state.country
+    val currentStations = if (state.selectedTab == LocationExplorerTab.CITY) state.cityStations else state.countryStations
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = RadioTokens.Colors.CardSurface,
+        contentColor = Color.White,
+        dragHandle = null,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF19241E)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_location),
+                            contentDescription = null,
+                            tint = Color(0xFF00E676),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = "Explore Area Stations",
+                            color = Color.White,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${state.city}, ${state.country}",
+                            color = Color(0xFF8E9BAE),
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.size(RadioTokens.Dimens.MinTouchTarget)
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_close),
+                        contentDescription = "Close",
+                        tint = RadioTokens.Colors.TextSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            // Segmented Filter Tabs: City vs Country
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF141A24), RoundedCornerShape(14.dp))
+                    .border(BorderStroke(1.dp, Color(0xFF222B3A)), RoundedCornerShape(14.dp))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                val isCityActive = state.selectedTab == LocationExplorerTab.CITY
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (isCityActive) Color(0xFF00E676) else Color.Transparent)
+                        .clickable { onSelectTab(LocationExplorerTab.CITY) }
+                        .padding(vertical = 9.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "City (${state.city})",
+                        color = if (isCityActive) Color(0xFF0A120D) else Color(0xFF8E9BAE),
+                        fontSize = 13.sp,
+                        fontWeight = if (isCityActive) FontWeight.Bold else FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                val isCountryActive = state.selectedTab == LocationExplorerTab.COUNTRY
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (isCountryActive) Color(0xFF00E676) else Color.Transparent)
+                        .clickable { onSelectTab(LocationExplorerTab.COUNTRY) }
+                        .padding(vertical = 9.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Country (${state.country})",
+                        color = if (isCountryActive) Color(0xFF0A120D) else Color(0xFF8E9BAE),
+                        fontSize = 13.sp,
+                        fontWeight = if (isCountryActive) FontWeight.Bold else FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // Quick Targeted Shuffle Action Pill
+            Button(
+                onClick = { onShuffleArea(activeTargetName) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(24.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF15261D),
+                    contentColor = Color(0xFF00E676)
+                ),
+                border = BorderStroke(1.dp, Color(0xFF00E676))
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_shuffle),
+                        contentDescription = null,
+                        tint = Color(0xFF00E676),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Shuffle “$activeTargetName” Radio",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // Content: Loading, Error, Empty, or Stations List
+            if (state.isLoading) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 20.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF141A24)),
+                    border = BorderStroke(1.dp, RadioTokens.Colors.Border)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.5.dp,
+                            color = Color(0xFF00E676)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "Finding stations in $activeTargetName...",
+                            color = Color(0xFF8E9BAE),
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+            } else if (state.errorMessage != null && currentStations.isEmpty()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1416)),
+                    border = BorderStroke(1.dp, Color(0xFF4A2228))
+                ) {
+                    Text(
+                        text = state.errorMessage,
+                        color = Color(0xFFFF6B81),
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    )
+                }
+            } else if (currentStations.isEmpty()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF141A24)),
+                    border = BorderStroke(1.dp, RadioTokens.Colors.Border)
+                ) {
+                    Text(
+                        text = "No additional stations found for $activeTargetName.",
+                        color = Color(0xFF8E9BAE),
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp)
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "AVAILABLE STATIONS (${currentStations.size})",
+                        color = Color(0xFF8E9BAE),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                }
+
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 380.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(currentStations, key = { it.channelId }) { station ->
+                        StationItemRow(
+                            station = station,
+                            isCurrent = station.channelId == currentChannelId,
+                            isFav = isFavorite(station.channelId),
+                            onPlay = {
+                                onPlayStation(station)
+                                onDismiss()
+                            },
+                            onToggleFavorite = { onToggleFavorite(station) }
+                        )
+                    }
+                }
             }
         }
     }
