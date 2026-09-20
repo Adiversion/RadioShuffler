@@ -125,23 +125,24 @@ jobs:
                   raise SystemExit("Manual version_tag must look like v1.2.3 or 1.2.3")
               return normalized
 
+          subprocess.run(["git", "fetch", "--tags", "--force"], check=False)
+          tags = subprocess.check_output(
+              ["git", "tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"],
+              text=True,
+          ).splitlines()
+
+          parsed = []
+          for tag in tags:
+              match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag.strip())
+              if match:
+                  parsed.append(tuple(map(int, match.groups())))
+
+          major, minor, patch = max(parsed) if parsed else (1, 0, 0)
+          previous_tag = f"v{major}.{minor}.{patch}" if parsed else ""
+
           if manual:
               version_tag = normalize(manual)
           else:
-              subprocess.run(["git", "fetch", "--tags", "--force"], check=False)
-              tags = subprocess.check_output(
-                  ["git", "tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"],
-                  text=True,
-              ).splitlines()
-
-              parsed = []
-              for tag in tags:
-                  match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag.strip())
-                  if match:
-                      parsed.append(tuple(map(int, match.groups())))
-
-              major, minor, patch = max(parsed) if parsed else (1, 0, 0)
-
               if bump == "major":
                   major, minor, patch = major + 1, 0, 0
               elif bump == "minor":
@@ -157,12 +158,15 @@ jobs:
               with open(output_path, "a") as f:
                   f.write(f"version_tag={version_tag}\n")
                   f.write(f"version_name={version_name}\n")
+                  f.write(f"previous_tag={previous_tag}\n")
           print(f"version_tag={version_tag}")
           print(f"version_name={version_name}")
+          print(f"previous_tag={previous_tag}")
 
       - name: Show resolved version
         run: |
           echo "Resolved version: ${{ steps.version.outputs.version_tag }}"
+          echo "Previous version: ${{ steps.version.outputs.previous_tag }}"
 
       - name: Build Release APK with Dynamic Version
         env:
@@ -187,6 +191,66 @@ jobs:
       - name: Report APK size
         run: ls -lh release_output/RadioShuffler.apk
 
+      - name: Generate Dynamic Release Notes
+        shell: python
+        env:
+          PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
+          VERSION_TAG: ${{ steps.version.outputs.version_tag }}
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          import os
+          import subprocess
+
+          prev_tag = os.environ.get("PREVIOUS_TAG", "").strip()
+          version_tag = os.environ.get("VERSION_TAG", "").strip()
+          version_name = os.environ.get("VERSION_NAME", "").strip()
+          run_number = os.environ.get("RUN_NUMBER", "").strip()
+
+          commit_lines = []
+          try:
+              if prev_tag:
+                  cmd = ["git", "log", f"{prev_tag}..HEAD", "--pretty=format:- %s ([%h](https://github.com/Adiversion/radioshuffler/commit/%H))", "--no-merges"]
+              else:
+                  cmd = ["git", "log", "-n", "10", "--pretty=format:- %s ([%h](https://github.com/Adiversion/radioshuffler/commit/%H))", "--no-merges"]
+              output = subprocess.check_output(cmd, text=True).strip()
+              if output:
+                  commit_lines = [line.strip() for line in output.splitlines() if line.strip()]
+          except Exception as e:
+              print(f"Commit log extraction warning: {e}")
+
+          if not commit_lines:
+              commit_lines = ["- Stability, playback, and performance improvements."]
+
+          changelog_section = "\n".join(commit_lines)
+
+          compare_section = ""
+          if prev_tag and prev_tag != version_tag:
+              compare_section = f"\n**Full Changelog**: https://github.com/Adiversion/radioshuffler/compare/{prev_tag}...{version_tag}\n"
+
+          notes = (
+              f"## 📻 Radio Shuffler {version_tag}\n\n"
+              f"### 📦 Release Metadata\n"
+              f"- **Version Name:** `{version_name}`\n"
+              f"- **Build Code:** `{run_number}`\n"
+              f"- **Target OS:** Android 8.0+ (API 26 – API 35)\n"
+              f"- **License:** GNU General Public License v3.0 (GPL-3.0)\n\n"
+              f"---\n\n"
+              f"### 📝 What's Changed in this Release\n"
+              f"{changelog_section}\n\n"
+              f"{compare_section}"
+              f"---\n\n"
+              f"### 📲 Installation & Updates\n"
+              f"- **Direct Install:** Download `RadioShuffler.apk` below and install it on your Android device.\n"
+              f"- **Built-in In-App Updates:** Open Settings (`☰`) in the top right of the app anytime to check for releases, monitor live download progress, and update with one tap.\n"
+              f"- **Obtainium (Optional):** If you manage your FOSS apps with [Obtainium](https://github.com/ImranR98/Obtainium), add `https://github.com/Adiversion/radioshuffler` to track releases.\n"
+          )
+          os.makedirs("release_output", exist_ok=True)
+          with open("release_output/release_notes.md", "w", encoding="utf-8") as f:
+              f.write(notes)
+          print("=== Generated Release Notes ===")
+          print(notes)
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -195,33 +259,7 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          body: |
-            ## 📻 Radio Shuffler ${{ steps.version.outputs.version_tag }}
-
-            ### 📦 Release Metadata
-            - **Version Name:** `${{ steps.version.outputs.version_name }}`
-            - **Build Code:** `${{ github.run_number }}`
-            - **Target OS:** Android 8.0+ (API 26 – API 35)
-            - **License:** GNU General Public License v3.0 (GPL-3.0)
-
-            ---
-
-            ### 🚀 Highlights in this Release
-            - **Modern 3-Tab Bottom Navigation**: Dedicated **Radio Player**, **Search & Discover**, and **Library** tabs.
-            - **Targeted Query Shuffling**: Tap to shuffle random stations within a country, city, or genre (e.g. `🎲 Shuffle “India”`).
-            - **Persistent Mini-Player**: Uninterrupted playback controls while browsing stations or your library.
-            - **Lag-Free 60 FPS Lists**: Virtualized `LazyColumn` rendering replacing unbounded scrolling.
-            - **Live Stream Reconnection**: Stream cycling drops auto-reconnect instead of abruptly skipping stations.
-            - **Synchronized Favorites**: Favorite heart button stays 100% in sync with the active ExoPlayer stream.
-            - **Compact Tuner Card**: Streamlined 200dp height with 44dp enlarged favorite heart button.
-            - **In-App Updater**: Chunked streaming download with live percentage progress bar.
-
-            ---
-
-            ### 📲 Installation & Updates
-            - **Direct Install**: Download `RadioShuffler.apk` below and install it on your Android device.
-            - **Built-in In-App Updates**: Open Settings (`☰`) in the top right of the app anytime to check for releases, monitor live download progress, and update with one tap.
-            - **Obtainium (Optional)**: If you manage your FOSS apps with [Obtainium](https://github.com/ImranR98/Obtainium), add `https://github.com/Adiversion/radioshuffler` to track releases.
+          body_path: release_output/release_notes.md
           files: release_output/RadioShuffler.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

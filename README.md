@@ -28,19 +28,27 @@ No algorithms. No user tracking. No subscription fees. Just pure, spontaneous li
 - **🎲 Global & Targeted Shuffling**:
   - **Worldwide Shuffle**: One tap takes you anywhere on Earth.
   - **Targeted Shuffle**: Type any country, city, or music genre (e.g., `India`, `Tokyo`, `Jazz`, `Reggae`) and tap **Shuffle** to explore random unique stations strictly within that region or style.
-  - **Non-Repeating History**: Remembers your recent stations so consecutive shuffles always uncover new frequencies.
+  - **Strict Diversity**: Smart sampling prevents country clustering; consecutive worldwide shuffles always uncover fresh stations across different countries.
+- **🎵 Real-Time Now Playing Track Discovery**:
+  - Live Shoutcast / Icecast ICY metadata extraction for song titles and artists.
+  - Synchronized across the main player, persistent mini-player, Android lock screen, and notification shade.
+- **🖤 True AMOLED Pure Black Experience**:
+  - `#000000` AMOLED theme engineered for maximum battery efficiency on OLED displays.
+  - High-contrast, crisp white SystemUI status bar icons and seamless edge-to-edge layout.
 - **📻 Modern 3-Tab Material 3 Architecture**:
-  - **Radio**: Clean, distraction-free player screen featuring a compact Tuner Card, live status badges, and quick exploration chips.
+  - **Radio**: Focused Now Playing screen with a compact 200dp Tuner Card, live status badges, and quick mood pills.
   - **Search & Discover**: Worldwide station search with interactive browseable results and one-tap random pick.
   - **Library**: Dual collection with saved **Favorites** and a vertical **Recent History** (capped at 20 stations).
-- **🎵 Persistent Mini-Player**:
+- **🎶 Persistent Mini-Player**:
   - Unobtrusively floats above the bottom navigation bar when browsing Search or Library tabs.
-  - Quick-action play/pause and favorite heart buttons with one-tap return to the main player.
+  - Quick-action play/pause and 44dp favorite heart toggle with one-tap return to the main player.
 - **🔒 Lock Screen & Background Media Controls**:
   - Full Android **Media3 / ExoPlayer** integration with lock screen album art, notification shade controls, and Bluetooth/headset button support.
-  - Optimized for MIUI / HyperOS and battery-restricted Android devices.
+  - Optimized for Xiaomi HyperOS / MIUI Live Updates and battery-restricted Android devices.
+- **🔊 Sound Cues & Equalizer**:
+  - Auditory feedback cue on shuffle and one-tap access to your device's native system equalizer.
 - **⏱ Sleep Timer**:
-  - Automatically fade and pause playback after 15, 30, or 60 minutes.
+  - Automatically pause playback after 15, 30, or 60 minutes.
 - **🔄 Built-in In-App Updater**:
   - Check GitHub releases, stream APK downloads with real-time percentage progress bars, and install updates with a single tap.
 - **🛡 100% Free & Open Source**:
@@ -51,10 +59,15 @@ No algorithms. No user tracking. No subscription fees. Just pure, spontaneous li
 ## 📲 Installation & Updates
 
 ### Option 1: Direct APK Download (Built-in In-App Updates)
-Download the latest signed APK directly from the [GitHub Releases](https://github.com/Adiversion/radioshuffler/releases) page:
-1. Download `RadioShuffler.apk`.
-2. Open the file and tap **Install** (allow "Install unknown apps" if prompted).
-3. **Built-in In-App Updates**: Radio Shuffler features its own built-in updater! Simply tap the Settings menu (`☰`) in the top right anytime to check for new releases, monitor live download progress, and install updates with a single tap.
+<p align="left">
+  <a href="https://github.com/Adiversion/radioshuffler/releases/latest/download/RadioShuffler.apk">
+    <img src="https://img.shields.io/badge/Download-RadioShuffler.apk-00E676?style=for-the-badge&logo=android&logoColor=white" alt="Download RadioShuffler.apk" />
+  </a>
+</p>
+
+1. Download **[RadioShuffler.apk](https://github.com/Adiversion/radioshuffler/releases/latest/download/RadioShuffler.apk)**.
+2. Open the downloaded file and tap **Install** (allow "Install unknown apps" if prompted).
+3. **Automatic In-App Updates**: Radio Shuffler features its own built-in updater! Simply tap the Settings menu (`☰`) in the top right anytime to check for new releases, monitor live download progress, and install updates with a single tap.
 
 ### Option 2: Obtainium (Optional FOSS Package Manager)
 If you prefer managing updates alongside your other open-source apps using [Obtainium](https://github.com/ImranR98/Obtainium):
@@ -64,20 +77,11 @@ If you prefer managing updates alongside your other open-source apps using [Obta
 
 ---
 
-## 📋 What's Updated, Added & Optimized
+## 📋 What's Changed & Version History
 
-See the full [CHANGELOG.md](CHANGELOG.md) for detailed version history.
-
-### Highlights in v1.1.0:
-- 🚀 **Added**: 3-Tab Bottom Navigation (Radio, Search, Library) + Persistent Mini-Player.
-- 🚀 **Added**: Targeted Regional/Genre Shuffling (e.g. `🎲 Shuffle “India”`).
-- 🚀 **Added**: Material 3 Settings Bottom Sheet (`☰`) with Sleep Timer & In-App Updates.
-- 🛠 **Fixed**: Live stream disconnection cycles (`STATE_ENDED`) reconnect automatically instead of skipping.
-- 🛠 **Fixed**: Favorite heart button synchronization with ExoPlayer active stream.
-- 🛠 **Fixed**: Lock screen playback widget visibility on Xiaomi / HyperOS / MIUI.
-- ⚡ **Optimized**: Virtualized `LazyColumn` rendering (zero scrolling lag at 60 FPS).
-- ⚡ **Optimized**: Compact 200dp Tuner Card eliminating empty space, and 44dp enlarged favorite heart button.
-- ⚡ **Optimized**: In-app updater with chunked streaming and live percentage progress bar.
+Release notes are **automatically generated** from git commits on every build!
+- Check out the latest release notes and download links on the **[GitHub Releases](https://github.com/Adiversion/radioshuffler/releases)** page.
+- For milestone release summaries, see **[CHANGELOG.md](CHANGELOG.md)**.
 
 ---
 

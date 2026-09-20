@@ -5,6 +5,17 @@ All notable changes to **Radio Shuffler** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.23] - 2026-09-20
+
+### 🚀 Added & Improved
+- **Automatic GitHub Release Notes**: GitHub Actions workflow dynamically extracts commit messages since the previous release, eliminating manual release note authoring.
+- **Direct APK Download**: Added one-tap latest APK badge and download link directly in the README.
+
+### 🛠 Fixed
+- **SystemUI Notification & Lock Screen Now Playing Track**: Restored `player.replaceMediaItem` with `MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED` guards, ensuring real-time track titles show up on the Android notification shade and lock screen without triggering buffering circle stutter.
+- **Status Bar Icon Visibility**: Configured `SystemBarStyle.dark` with `isAppearanceLightStatusBars = false` so status bar clock, Wi-Fi, and network icons stay crisp white on pure `#000000` AMOLED black.
+- **Mini-Player Song Display**: Track title is prominently displayed on the mini-player above station name and location.
+
 ---
 
 ## [1.1.0] - 2026-09-19
