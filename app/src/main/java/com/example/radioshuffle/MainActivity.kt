@@ -105,6 +105,28 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+object RadioTokens {
+    object Colors {
+        val Background = Color(0xFF0C0F14)
+        val CardSurface = Color(0xFF141922)
+        val CardElevated = Color(0xFF1B2330)
+        val Border = Color(0xFF222B38)
+        val BorderSubtle = Color(0xFF2E3D52)
+        val Accent = Color(0xFF00E676)
+        val TextPrimary = Color(0xFFFFFFFF)
+        val TextSecondary = Color(0xFF8E9BAE)
+        val TextMuted = Color(0xFF7E8E9F)
+        val Buffering = Color(0xFFFFC107)
+        val Error = Color(0xFFFF5252)
+        val Favorite = Color(0xFFFF2D55)
+    }
+    object Dimens {
+        val MinTouchTarget = 44.dp
+        val BottomBarHeight = 62.dp
+        val CardCornerRadius = 24.dp
+    }
+}
+
 enum class NavTab(val title: String, val iconRes: Int) {
     RADIO("Radio", R.drawable.ic_radio),
     SEARCH("Search", R.drawable.ic_search),
@@ -863,7 +885,7 @@ private fun RadioTabContent(
 
             IconButton(
                 onClick = onOpenSettings,
-                modifier = Modifier.size(40.dp)
+                modifier = Modifier.size(RadioTokens.Dimens.MinTouchTarget)
             ) {
                 Icon(
                     painter = painterResource(id = R.drawable.ic_menu),
@@ -988,8 +1010,8 @@ private fun RadioTabContent(
             if (activeQuery != null) {
                 Text(
                     text = "Tap again to find another random station in “$activeQuery”",
-                    color = Color(0xFF6E7D91),
-                    fontSize = 11.sp,
+                    color = RadioTokens.Colors.TextSecondary,
+                    fontSize = 12.sp,
                     textAlign = TextAlign.Center
                 )
             }
@@ -1002,8 +1024,8 @@ private fun RadioTabContent(
         ) {
             Text(
                 text = "EXPLORE BY GENRE OR REGION",
-                color = Color(0xFF6E7D91),
-                fontSize = 11.sp,
+                color = RadioTokens.Colors.TextSecondary,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.sp
             )
@@ -1242,13 +1264,13 @@ private fun SearchTabContent(
                         )
                         IconButton(
                             onClick = onClearSearch,
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(RadioTokens.Dimens.MinTouchTarget)
                         ) {
                             Icon(
                                 painter = painterResource(id = R.drawable.ic_close),
                                 contentDescription = "Clear",
-                                tint = Color(0xFF6E7D91),
-                                modifier = Modifier.size(14.dp)
+                                tint = RadioTokens.Colors.TextSecondary,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
@@ -1318,12 +1340,12 @@ private fun SearchTabContent(
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-                            border = BorderStroke(1.dp, Color(0xFF222B38))
+                            colors = CardDefaults.cardColors(containerColor = RadioTokens.Colors.CardSurface),
+                            border = BorderStroke(1.dp, RadioTokens.Colors.Border)
                         ) {
                             Text(
                                 text = "No stations found matching this search. Try a country, city, or station name.",
-                                color = Color(0xFF6E7D91),
+                                color = RadioTokens.Colors.TextSecondary,
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier
@@ -1349,8 +1371,8 @@ private fun SearchTabContent(
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
                             text = "POPULAR DESTINATIONS (TAP TO SHUFFLE)",
-                            color = Color(0xFF6E7D91),
-                            fontSize = 11.sp,
+                            color = RadioTokens.Colors.TextSecondary,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.sp
                         )
@@ -1508,12 +1530,12 @@ private fun LibraryTabContent(
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-                            border = BorderStroke(1.dp, Color(0xFF222B38))
+                            colors = CardDefaults.cardColors(containerColor = RadioTokens.Colors.CardSurface),
+                            border = BorderStroke(1.dp, RadioTokens.Colors.Border)
                         ) {
                             Text(
                                 text = "No favorites yet. Tap the heart icon while listening to save stations here!",
-                                color = Color(0xFF6E7D91),
+                                color = RadioTokens.Colors.TextSecondary,
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier
@@ -1539,12 +1561,12 @@ private fun LibraryTabContent(
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF141922)),
-                            border = BorderStroke(1.dp, Color(0xFF222B38))
+                            colors = CardDefaults.cardColors(containerColor = RadioTokens.Colors.CardSurface),
+                            border = BorderStroke(1.dp, RadioTokens.Colors.Border)
                         ) {
                             Text(
                                 text = "No recent stations played yet. Start exploring radio to build your history.",
-                                color = Color(0xFF6E7D91),
+                                color = RadioTokens.Colors.TextSecondary,
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier
@@ -1623,8 +1645,8 @@ private fun StationItemRow(
                     )
                     Text(
                         text = station.location,
-                        color = Color(0xFF8E9BAE),
-                        fontSize = 11.sp,
+                        color = RadioTokens.Colors.TextSecondary,
+                        fontSize = 12.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1633,12 +1655,12 @@ private fun StationItemRow(
 
             IconButton(
                 onClick = onToggleFavorite,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(RadioTokens.Dimens.MinTouchTarget)
             ) {
                 Icon(
                     painter = painterResource(id = if (isFav) R.drawable.ic_favorite_filled else R.drawable.ic_favorite_border),
                     contentDescription = if (isFav) "Favorited" else "Add to favorites",
-                    tint = if (isFav) Color(0xFFFF2D55) else Color(0xFF8E9BAE),
+                    tint = if (isFav) RadioTokens.Colors.Favorite else RadioTokens.Colors.TextSecondary,
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -1705,8 +1727,8 @@ private fun MiniPlayerBar(
                     )
                     Text(
                         text = location,
-                        color = Color(0xFF8E9BAE),
-                        fontSize = 11.sp,
+                        color = RadioTokens.Colors.TextSecondary,
+                        fontSize = 12.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1716,32 +1738,32 @@ private fun MiniPlayerBar(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(
                     onClick = onToggleFavorite,
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier.size(RadioTokens.Dimens.MinTouchTarget)
                 ) {
                     Icon(
                         painter = painterResource(id = if (isFavorite) R.drawable.ic_favorite_filled else R.drawable.ic_favorite_border),
                         contentDescription = if (isFavorite) "Favorited" else "Add to favorites",
-                        tint = if (isFavorite) Color(0xFFFF2D55) else Color(0xFF8E9BAE),
+                        tint = if (isFavorite) RadioTokens.Colors.Favorite else RadioTokens.Colors.TextSecondary,
                         modifier = Modifier.size(20.dp)
                     )
                 }
 
                 IconButton(
                     onClick = onTogglePlayPause,
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier.size(RadioTokens.Dimens.MinTouchTarget)
                 ) {
                     if (isBuffering) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(20.dp),
                             strokeWidth = 2.dp,
-                            color = Color(0xFF00E676)
+                            color = RadioTokens.Colors.Accent
                         )
                     } else {
                         Icon(
                             painter = painterResource(id = if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play),
                             contentDescription = if (isPlaying) "Pause" else "Play",
-                            tint = Color(0xFF00E676),
-                            modifier = Modifier.size(20.dp)
+                            tint = RadioTokens.Colors.Accent,
+                            modifier = Modifier.size(22.dp)
                         )
                     }
                 }
@@ -1759,45 +1781,50 @@ private fun BottomNavBar(
     onSelectTab: (NavTab) -> Unit
 ) {
     Surface(
-        color = Color(0xFF141922),
-        border = BorderStroke(1.dp, Color(0xFF222B38)),
+        color = RadioTokens.Colors.CardSurface,
+        border = BorderStroke(1.dp, RadioTokens.Colors.Border),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .height(62.dp),
-            horizontalArrangement = Arrangement.SpaceAround,
-            verticalAlignment = Alignment.CenterVertically
         ) {
-        NavTab.values().forEach { tab ->
-            val selected = currentTab == tab
-            Column(
+            Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onSelectTab(tab) }
-                    .padding(horizontal = 24.dp, vertical = 6.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                    .fillMaxWidth()
+                    .height(RadioTokens.Dimens.BottomBarHeight),
+                horizontalArrangement = Arrangement.SpaceAround,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    painter = painterResource(id = tab.iconRes),
-                    contentDescription = tab.title,
-                    tint = if (selected) Color(0xFF00E676) else Color(0xFF8E9BAE),
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(modifier = Modifier.height(3.dp))
-                Text(
-                    text = tab.title,
-                    color = if (selected) Color(0xFF00E676) else Color(0xFF8E9BAE),
-                    fontSize = 11.sp,
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-                )
+                NavTab.values().forEach { tab ->
+                    val selected = currentTab == tab
+                    Column(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onSelectTab(tab) }
+                            .padding(horizontal = 20.dp, vertical = 6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(id = tab.iconRes),
+                            contentDescription = tab.title,
+                            tint = if (selected) RadioTokens.Colors.Accent else RadioTokens.Colors.TextSecondary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = tab.title,
+                            color = if (selected) RadioTokens.Colors.Accent else RadioTokens.Colors.TextSecondary,
+                            fontSize = 12.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold
+                        )
+                    }
+                }
             }
         }
     }
-}
 }
 
 // ==========================================
@@ -1855,13 +1882,13 @@ private fun SettingsBottomSheet(
 
                 IconButton(
                     onClick = onDismiss,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(RadioTokens.Dimens.MinTouchTarget)
                 ) {
                     Icon(
                         painter = painterResource(id = R.drawable.ic_close),
                         contentDescription = "Close",
-                        tint = Color(0xFF8E9BAE),
-                        modifier = Modifier.size(18.dp)
+                        tint = RadioTokens.Colors.TextSecondary,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }
@@ -2224,13 +2251,13 @@ private fun RadioStatus(
                                     modifier = Modifier
                                         .size(4.dp)
                                         .clip(CircleShape)
-                                        .background(Color(0xFF4C5B6E))
+                                        .background(RadioTokens.Colors.TextMuted)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = if (isActuallyBuffering) "Connecting stream..." else "Live Broadcast",
-                                    color = Color(0xFF6E7D91),
-                                    fontSize = 11.sp,
+                                    color = RadioTokens.Colors.TextSecondary,
+                                    fontSize = 12.sp,
                                     fontWeight = FontWeight.Normal,
                                     letterSpacing = 0.5.sp
                                 )
@@ -2311,14 +2338,19 @@ private fun TimerButton(
 ) {
     OutlinedButton(
         onClick = onClick,
-        modifier = modifier,
+        modifier = modifier.defaultMinSize(minHeight = RadioTokens.Dimens.MinTouchTarget),
         shape = RoundedCornerShape(20.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
         colors = ButtonDefaults.outlinedButtonColors(
             containerColor = if (selected) Color(0x1A00E676) else Color.Transparent,
-            contentColor = if (selected) Color(0xFF00E676) else Color(0xFF8E9BAE)
+            contentColor = if (selected) RadioTokens.Colors.Accent else RadioTokens.Colors.TextSecondary
         )
     ) {
-        Text(label, fontSize = 12.sp)
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+        )
     }
 }
 
