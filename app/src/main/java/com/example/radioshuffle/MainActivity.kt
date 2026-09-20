@@ -261,6 +261,11 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
+                val meta = mediaItem?.mediaMetadata ?: return
+                applyMetadataUpdate(meta)
+                return
+            }
             val meta = mediaItem?.mediaMetadata
             val channelId = mediaItem?.mediaId?.takeIf { it.isNotBlank() }
                 ?: meta?.description?.toString()?.takeIf { it.isNotBlank() }

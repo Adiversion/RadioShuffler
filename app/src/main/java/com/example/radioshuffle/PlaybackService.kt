@@ -125,6 +125,9 @@ class PlaybackService : MediaSessionService() {
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
+                    return
+                }
                 currentTrackTitle = null
                 metadataProbeJob?.cancel()
                 val emptyOrStation = mediaItem?.mediaMetadata ?: MediaMetadata.EMPTY
@@ -450,6 +453,16 @@ class PlaybackService : MediaSessionService() {
             .setExtras(updatedExtras)
             .build()
 
+        val updatedItem = currentItem.buildUpon()
+            .setMediaMetadata(updatedMetadata)
+            .build()
+
+        try {
+            if (player.currentMediaItemIndex >= 0) {
+                player.replaceMediaItem(player.currentMediaItemIndex, updatedItem)
+            }
+        } catch (_: Exception) {
+        }
         player.playlistMetadata = updatedMetadata
         forwardingPlayer?.notifyMetadataChanged(updatedMetadata)
     }
