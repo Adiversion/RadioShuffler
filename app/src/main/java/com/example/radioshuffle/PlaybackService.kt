@@ -51,6 +51,7 @@ class PlaybackService : MediaSessionService() {
     private var currentStation: ResolvedStation? = null
     @Volatile
     private var currentTrackTitle: String? = null
+    private var forwardingPlayer: RadioForwardingPlayer? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -126,7 +127,9 @@ class PlaybackService : MediaSessionService() {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 currentTrackTitle = null
                 metadataProbeJob?.cancel()
-                basePlayer.playlistMetadata = mediaItem?.mediaMetadata ?: MediaMetadata.EMPTY
+                val emptyOrStation = mediaItem?.mediaMetadata ?: MediaMetadata.EMPTY
+                basePlayer.playlistMetadata = emptyOrStation
+                forwardingPlayer?.notifyMetadataChanged(emptyOrStation)
                 if (mediaItem != null) {
                     scheduleStationHealthCheck(basePlayer)
                     scheduleMetadataProbe(basePlayer, mediaItem)
@@ -208,46 +211,8 @@ class PlaybackService : MediaSessionService() {
             }
         })
 
-        val forwardingPlayer = object : ForwardingPlayer(basePlayer) {
-            override fun getAvailableCommands(): Player.Commands {
-                return super.getAvailableCommands().buildUpon()
-                    .add(COMMAND_SEEK_TO_NEXT)
-                    .add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
-                    .add(COMMAND_SEEK_TO_PREVIOUS)
-                    .add(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
-                    .build()
-            }
-
-            override fun isCommandAvailable(command: Int): Boolean {
-                return when (command) {
-                    COMMAND_SEEK_TO_NEXT,
-                    COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
-                    COMMAND_SEEK_TO_PREVIOUS,
-                    COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> true
-                    else -> super.isCommandAvailable(command)
-                }
-            }
-
-            override fun seekToNext() {
-                SoundFeedback.playShuffleTriggered()
-                shuffleBackground(this, playCue = true)
-            }
-
-            override fun seekToNextMediaItem() {
-                SoundFeedback.playShuffleTriggered()
-                shuffleBackground(this, playCue = true)
-            }
-
-            override fun seekToPrevious() {
-                SoundFeedback.playShuffleTriggered()
-                shuffleBackground(this, playCue = true)
-            }
-
-            override fun seekToPreviousMediaItem() {
-                SoundFeedback.playShuffleTriggered()
-                shuffleBackground(this, playCue = true)
-            }
-        }
+        val playerWrapper = RadioForwardingPlayer(basePlayer)
+        forwardingPlayer = playerWrapper
 
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -304,10 +269,105 @@ class PlaybackService : MediaSessionService() {
             }
         }
 
-        mediaSession = MediaSession.Builder(this, forwardingPlayer)
+        mediaSession = MediaSession.Builder(this, playerWrapper)
             .setSessionActivity(pendingIntent)
             .setCallback(callback)
             .build()
+    }
+
+    private inner class RadioForwardingPlayer(player: Player) : ForwardingPlayer(player) {
+        private val customListeners = java.util.concurrent.CopyOnWriteArraySet<Player.Listener>()
+
+        override fun addListener(listener: Player.Listener) {
+            customListeners.add(listener)
+            super.addListener(listener)
+        }
+
+        override fun removeListener(listener: Player.Listener) {
+            customListeners.remove(listener)
+            super.removeListener(listener)
+        }
+
+        override fun getAvailableCommands(): Player.Commands {
+            return super.getAvailableCommands().buildUpon()
+                .add(COMMAND_SEEK_TO_NEXT)
+                .add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                .add(COMMAND_SEEK_TO_PREVIOUS)
+                .add(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                .build()
+        }
+
+        override fun isCommandAvailable(command: Int): Boolean {
+            return when (command) {
+                COMMAND_SEEK_TO_NEXT,
+                COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                COMMAND_SEEK_TO_PREVIOUS,
+                COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> true
+                else -> super.isCommandAvailable(command)
+            }
+        }
+
+        override fun seekToNext() {
+            SoundFeedback.playShuffleTriggered()
+            shuffleBackground(this, playCue = true)
+        }
+
+        override fun seekToNextMediaItem() {
+            SoundFeedback.playShuffleTriggered()
+            shuffleBackground(this, playCue = true)
+        }
+
+        override fun seekToPrevious() {
+            SoundFeedback.playShuffleTriggered()
+            shuffleBackground(this, playCue = true)
+        }
+
+        override fun seekToPreviousMediaItem() {
+            SoundFeedback.playShuffleTriggered()
+            shuffleBackground(this, playCue = true)
+        }
+
+        override fun getMediaMetadata(): MediaMetadata {
+            val base = super.getMediaMetadata()
+            val currentTrack = currentTrackTitle
+            val station = currentStation
+            if (!currentTrack.isNullOrBlank() && station != null) {
+                val extras = (base.extras ?: Bundle()).apply {
+                    putString("station_title", station.title)
+                    putString("track_title", currentTrack)
+                }
+                return base.buildUpon()
+                    .setTitle(currentTrack)
+                    .setDisplayTitle(currentTrack)
+                    .setAlbumTitle(station.title)
+                    .setArtist(station.title)
+                    .setSubtitle(station.location)
+                    .setExtras(extras)
+                    .build()
+            }
+            return base
+        }
+
+        override fun getCurrentMediaItem(): MediaItem? {
+            val item = super.getCurrentMediaItem() ?: return null
+            val currentTrack = currentTrackTitle
+            val station = currentStation
+            if (!currentTrack.isNullOrBlank() && station != null) {
+                return item.buildUpon()
+                    .setMediaMetadata(getMediaMetadata())
+                    .build()
+            }
+            return item
+        }
+
+        fun notifyMetadataChanged(metadata: MediaMetadata) {
+            for (listener in customListeners) {
+                try {
+                    listener.onMediaMetadataChanged(metadata)
+                    listener.onPlaylistMetadataChanged(metadata)
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     private fun shuffleBackground(player: Player, playCue: Boolean) {
@@ -391,6 +451,7 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         player.playlistMetadata = updatedMetadata
+        forwardingPlayer?.notifyMetadataChanged(updatedMetadata)
     }
 
     private fun scheduleMetadataProbe(player: Player, mediaItem: MediaItem) {

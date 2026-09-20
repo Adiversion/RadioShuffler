@@ -13,8 +13,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.view.WindowCompat
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
@@ -714,8 +716,16 @@ class MainActivity : ComponentActivity() {
     private var controllerFuture: ListenableFuture<MediaController>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
         super.onCreate(savedInstanceState)
+
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             window.isNavigationBarContrastEnforced = false
@@ -1739,14 +1749,26 @@ private fun MiniPlayerBar(
     onTogglePlayPause: () -> Unit,
     onOpenPlayer: () -> Unit
 ) {
-    val isPlaying = (state as? RadioUiState.Playing)?.isPlaying == true
-    val isBuffering = ((state as? RadioUiState.Playing)?.let { it.isBuffering && !it.isPlaying } == true) || state is RadioUiState.Loading
-    val title = when (state) {
-        is RadioUiState.Playing -> state.title
-        is RadioUiState.Loading -> state.message
+    val playingState = state as? RadioUiState.Playing
+    val isPlaying = playingState?.isPlaying == true
+    val isBuffering = ((playingState?.let { it.isBuffering && !it.isPlaying } == true)) || state is RadioUiState.Loading
+
+    val hasTrack = !playingState?.currentTrack.isNullOrBlank()
+    val primaryText = when {
+        hasTrack -> playingState?.currentTrack.orEmpty()
+        playingState != null -> playingState.title
+        state is RadioUiState.Loading -> state.message
         else -> "Radio Shuffler"
     }
-    val location = (state as? RadioUiState.Playing)?.let { "${it.city}, ${it.country}".trim(',', ' ') } ?: "Live Stream"
+
+    val secondaryText = when {
+        hasTrack && playingState != null -> {
+            val loc = "${playingState.city}, ${playingState.country}".trim(',', ' ')
+            if (loc.isNotBlank()) "${playingState.title} • $loc" else playingState.title
+        }
+        playingState != null -> "${playingState.city}, ${playingState.country}".trim(',', ' ').ifBlank { "Live Stream" }
+        else -> "Live Stream"
+    }
 
     Card(
         modifier = Modifier
@@ -1755,8 +1777,8 @@ private fun MiniPlayerBar(
             .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onOpenPlayer),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A222E)),
-        border = BorderStroke(1.dp, Color(0xFF2E3A4D))
+        colors = CardDefaults.cardColors(containerColor = RadioTokens.Colors.CardElevated),
+        border = BorderStroke(1.dp, RadioTokens.Colors.Border)
     ) {
         Row(
             modifier = Modifier
@@ -1767,7 +1789,7 @@ private fun MiniPlayerBar(
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f).padding(end = 8.dp)
             ) {
                 Box(
                     modifier = Modifier
@@ -1776,9 +1798,9 @@ private fun MiniPlayerBar(
                         .background(if (isBuffering) Color(0xFFFFC107) else Color(0xFF00E676))
                 )
                 Spacer(modifier = Modifier.width(10.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = title,
+                        text = primaryText,
                         color = Color.White,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
@@ -1786,9 +1808,9 @@ private fun MiniPlayerBar(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = location,
+                        text = secondaryText,
                         color = RadioTokens.Colors.TextSecondary,
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
